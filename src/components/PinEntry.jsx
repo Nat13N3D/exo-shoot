@@ -30,7 +30,7 @@ export default function PinEntry({ onConnect }) {
       setTimeout(() => setStatus('idle'), 200);
       return;
     }
-    onConnect(digits);
+    onConnect(digits, result.data?.expiresAt);
   };
 
   const keys = [1, 2, 3, 4, 5, 6, 7, 8, 9, 'del', 0, 'go'];

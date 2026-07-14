@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { uploadClip } from '../lib/syncApi.js';
 
-export default function ClipPreview({ clip, pin, onRetake, onSent }) {
+export default function ClipPreview({ clip, pin, onRetake, onSent, onSessionLost }) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState('preview');
   const [progress, setProgress] = useState(0);
@@ -51,8 +51,15 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
       setStatus('sent');
       setTimeout(() => { onSent(); }, 900);
     } catch (err) {
+      const msg = err?.message || 'Upload failed';
+      if (/404|410/.test(msg)) {
+        setStatus('error');
+        setErrorMsg('SESSION ENDED — RECONNECT');
+        setTimeout(() => { onSessionLost?.(); }, 1400);
+        return;
+      }
       setStatus('error');
-      setErrorMsg(err?.message || 'Upload failed');
+      setErrorMsg(msg);
     }
   };
 

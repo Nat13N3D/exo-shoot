@@ -18,7 +18,7 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400',
 };
 
-const PIN_TTL_MS = 15 * 60 * 1000;
+const PIN_TTL_MS = 24 * 60 * 60 * 1000; // 24h — device-binding for the day
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
 
 function withCors(resp) {
@@ -99,9 +99,11 @@ export default {
         });
       }
 
-      // POST /pin/:pin/upload?filename=...
+      // POST /pin/:pin/upload?filename=&kind=clip|audio&direction=to-editor|to-phone
       if (method === 'POST' && rest === '/upload') {
         const filename = url.searchParams.get('filename') || `clip_${Date.now()}.webm`;
+        const kind = url.searchParams.get('kind') || 'clip';
+        const direction = url.searchParams.get('direction') || 'to-editor';
         const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
         const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
         const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
@@ -120,10 +122,12 @@ export default {
           contentType,
           size: contentLength || 0,
           uploadedAt: Date.now(),
+          kind,
+          direction,
         });
         manifest.files = files;
         await saveManifest(env, pin, manifest);
-        return json({ ok: true, filename: safeName, key });
+        return json({ ok: true, filename: safeName, key, kind, direction });
       }
 
       // GET /pin/:pin/file/:name

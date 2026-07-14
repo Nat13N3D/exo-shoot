@@ -1,0 +1,18 @@
+{
+  "name": "ENCORE XO Shoot",
+  "short_name": "SHOOT",
+  "description": "Shoot video and beam it to your ENCORE XO editor.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#c084fc",
+  "icons": [
+    {
+      "src": "/encorexo-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

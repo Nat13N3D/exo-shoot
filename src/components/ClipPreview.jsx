@@ -6,6 +6,7 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
   const [status, setStatus] = useState('preview');
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
+  const [isPlaying, setIsPlaying] = useState(false);
   const urlRef = useRef(null);
 
   useEffect(() => {
@@ -14,13 +15,32 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
     urlRef.current = url;
     if (videoRef.current) {
       videoRef.current.src = url;
-      videoRef.current.play().catch(() => {});
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     }
     return () => {
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
       urlRef.current = null;
     };
   }, [clip]);
+
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused || v.ended) {
+      if (v.ended) v.currentTime = 0;
+      v.play().then(() => setIsPlaying(true)).catch(() => {});
+    } else {
+      v.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const restart = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = 0;
+    v.play().then(() => setIsPlaying(true)).catch(() => {});
+  };
 
   const send = async () => {
     setStatus('sending');
@@ -42,9 +62,12 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
     <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000' }}>
       <video
         ref={videoRef}
-        loop
         playsInline
         controls={false}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => setIsPlaying(false)}
+        onClick={togglePlay}
         style={{
           width: '100%',
           height: '100%',
@@ -52,6 +75,35 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
           background: '#000',
         }}
       />
+
+      {!isPlaying && status === 'preview' && (
+        <button
+          type="button"
+          onClick={togglePlay}
+          aria-label="Play"
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 84,
+            height: 84,
+            borderRadius: '50%',
+            background: 'rgba(192,132,252,0.85)',
+            border: '2px solid rgba(255,255,255,0.6)',
+            color: '#0a0a0a',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 6px 24px rgba(0,0,0,0.6)',
+            padding: 0,
+          }}
+        >
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="6,4 20,12 6,20" />
+          </svg>
+        </button>
+      )}
 
       <div
         style={{
@@ -61,7 +113,9 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
           right: 0,
           padding: '12px 16px',
           display: 'flex',
-          justifyContent: 'center',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 10,
         }}
       >
         <div
@@ -79,6 +133,61 @@ export default function ClipPreview({ clip, pin, onRetake, onSent }) {
         >
           {sizeMB} MB · CODE {pin}
         </div>
+
+        {status === 'preview' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              onClick={togglePlay}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              style={{
+                background: 'rgba(0,0,0,0.55)',
+                border: '1px solid #4a3560',
+                color: '#c084fc',
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+              }}
+            >
+              {isPlaying ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="4" width="4" height="16" />
+                  <rect x="14" y="4" width="4" height="16" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="6,4 20,12 6,20" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={restart}
+              aria-label="Restart"
+              style={{
+                background: 'rgba(0,0,0,0.55)',
+                border: '1px solid #4a3560',
+                color: '#c084fc',
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       <div

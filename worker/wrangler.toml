@@ -1,0 +1,7 @@
+name = "summer-queen-bb7c"
+main = "worker.js"
+compatibility_date = "2025-10-01"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "encorexo-media"

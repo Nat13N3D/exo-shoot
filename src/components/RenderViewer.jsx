@@ -102,20 +102,7 @@ export default function RenderViewer({ token }) {
   }
 
   if (state === 'bound-elsewhere') {
-    return (
-      <div style={containerStyle}>
-        <div style={brandStyle}>ENCORE XO™</div>
-        <div style={{ ...msgStyle, marginTop: 30, color: '#d4af37', fontSize: 16 }}>
-          🔒 BOUND TO ANOTHER DEVICE
-        </div>
-        <div style={{ ...hintStyle, maxWidth: 300 }}>
-          This video was already claimed by another phone. Only that device can play it.
-        </div>
-        <div style={{ ...hintStyle, opacity: 0.5, marginTop: 20 }}>
-          One buyer, one device. That's how EXO™ works.
-        </div>
-      </div>
-    );
+    return <AccessDeniedCinematic />;
   }
 
   if (state === 'error') {
@@ -151,6 +138,89 @@ export default function RenderViewer({ token }) {
         }}
       >
         ENCORE XO™
+      </div>
+    </div>
+  );
+}
+
+function AccessDeniedCinematic() {
+  // Cinematic sequence:
+  //   0.0–1.4s   logo zooms in from center
+  //   1.2–2.0s   red ACCESS DENIED! + MEMBERS ONLY fade in (overlaps zoom tail)
+  //   2.0–5.0s   HOLD (3 seconds full-frame)
+  //   5.0–7.0s   fade to black
+  //   7.0+       stays black
+  const [fading, setFading] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setFading(true), 5000);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: '#000',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
+        color: '#fff',
+      }}
+    >
+      <style>{`
+        @keyframes exoLogoZoom {
+          0%   { transform: scale(0);   opacity: 0; }
+          70%  { transform: scale(1.15); opacity: 1; }
+          100% { transform: scale(1);   opacity: 1; }
+        }
+        @keyframes exoRedFadeIn {
+          0%   { opacity: 0; transform: translateY(20px); letter-spacing: 0.5em; }
+          100% { opacity: 1; transform: translateY(0);    letter-spacing: 0.28em; }
+        }
+        @keyframes exoDenyPulse {
+          0%, 100% { text-shadow: 0 0 24px rgba(255,0,0,0.75); }
+          50%      { text-shadow: 0 0 44px rgba(255,0,0,0.95), 0 0 8px rgba(255,80,80,0.9); }
+        }
+        .exo-fade-to-black {
+          animation: exoFadeBlack 2s ease-out forwards;
+        }
+        @keyframes exoFadeBlack {
+          from { opacity: 1; }
+          to   { opacity: 0; }
+        }
+      `}</style>
+
+      <div className={fading ? 'exo-fade-to-black' : ''} style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 24,
+      }}>
+        <img
+          src="/encorexo-logo.png"
+          alt=""
+          draggable={false}
+          style={{
+            width: 220, maxWidth: '70vw',
+            filter: 'drop-shadow(0 0 24px rgba(212,175,55,0.5))',
+            animation: 'exoLogoZoom 1.4s cubic-bezier(0.2, 0.9, 0.3, 1.05) both',
+          }}
+        />
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 32, fontWeight: 900, letterSpacing: '0.28em',
+            color: '#ff2020',
+            animation: 'exoRedFadeIn 0.8s ease-out 1.2s both, exoDenyPulse 1.8s ease-in-out 2s infinite',
+          }}
+        >
+          ACCESS DENIED!
+        </div>
+        <div
+          style={{
+            fontSize: 14, fontWeight: 800, letterSpacing: '0.4em',
+            color: '#ff2020',
+            animation: 'exoRedFadeIn 0.8s ease-out 1.5s both',
+          }}
+        >
+          MEMBERS ONLY
+        </div>
       </div>
     </div>
   );

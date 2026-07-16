@@ -22,7 +22,8 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Range',
+  'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -135,18 +136,20 @@ export default {
       // POST /render/:token/upload — one-shot only; refuse if video already stored
       if (method === 'POST' && rest === '/upload') {
         if (manifest.hasVideo) return json({ error: 'already-uploaded' }, 409);
-        const contentType = request.headers.get('Content-Type') || 'video/webm';
+        const contentType = request.headers.get('Content-Type') || 'video/mp4';
         const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
         if (contentLength && contentLength > MAX_FILE_SIZE) {
           return json({ error: 'too-large', maxBytes: MAX_FILE_SIZE }, 413);
         }
-        const key = `renders/${token}/video.webm`;
+        const ext = contentType.startsWith('video/mp4') ? 'mp4' : 'webm';
+        const key = `renders/${token}/video.${ext}`;
         await env.MEDIA.put(key, request.body, {
           httpMetadata: { contentType },
         });
         manifest.hasVideo = true;
         manifest.sizeBytes = contentLength || 0;
         manifest.contentType = contentType;
+        manifest.fileExt = ext;
         await saveRenderManifest(env, token, manifest);
         return json({ ok: true, sizeBytes: manifest.sizeBytes });
       }
@@ -178,17 +181,47 @@ export default {
       }
 
       // GET /render/:token/video?device=X — device-gated video stream
+      // Handles Range: requests (206 Partial Content) so iOS Safari can seek.
       if (method === 'GET' && rest === '/video') {
         if (!manifest.hasVideo) return json({ error: 'not-uploaded-yet' }, 404);
         const device = url.searchParams.get('device') || '';
         if (!manifest.boundDevice) return json({ error: 'not-claimed' }, 403);
         if (device !== manifest.boundDevice) return json({ error: 'device-mismatch' }, 403);
-        const obj = await env.MEDIA.get(`renders/${token}/video.webm`);
+        const ext = manifest.fileExt || (manifest.contentType?.startsWith('video/mp4') ? 'mp4' : 'webm');
+        const key = `renders/${token}/video.${ext}`;
+        const contentType = manifest.contentType || (ext === 'mp4' ? 'video/mp4' : 'video/webm');
+
+        const rangeHeader = request.headers.get('Range');
+        if (rangeHeader) {
+          const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+          if (m) {
+            const start = parseInt(m[1], 10);
+            const end = m[2] ? parseInt(m[2], 10) : undefined;
+            const obj = await env.MEDIA.get(key, {
+              range: end !== undefined
+                ? { offset: start, length: end - start + 1 }
+                : { offset: start },
+            });
+            if (!obj) return json({ error: 'file-missing' }, 404);
+            const total = obj.size || manifest.sizeBytes;
+            const actualEnd = end !== undefined ? end : total - 1;
+            const headers = new Headers(CORS_HEADERS);
+            headers.set('Content-Type', contentType);
+            headers.set('Cache-Control', 'private, no-cache');
+            headers.set('Accept-Ranges', 'bytes');
+            headers.set('Content-Range', `bytes ${start}-${actualEnd}/${total}`);
+            headers.set('Content-Length', String(actualEnd - start + 1));
+            return new Response(obj.body, { status: 206, headers });
+          }
+        }
+
+        const obj = await env.MEDIA.get(key);
         if (!obj) return json({ error: 'file-missing' }, 404);
         const headers = new Headers(CORS_HEADERS);
-        headers.set('Content-Type', manifest.contentType || 'video/webm');
+        headers.set('Content-Type', contentType);
         headers.set('Cache-Control', 'private, no-cache');
         headers.set('Accept-Ranges', 'bytes');
+        headers.set('Content-Length', String(manifest.sizeBytes));
         return new Response(obj.body, { headers });
       }
     }

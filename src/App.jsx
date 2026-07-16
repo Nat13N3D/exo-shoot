@@ -27,12 +27,41 @@ function clearStoredPin() {
   catch {}
 }
 
+function readPinFromUrl() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const raw = (q.get('pin') || q.get('code') || '').replace(/\D/g, '');
+    return raw.length === 6 ? raw : null;
+  } catch { return null; }
+}
+
+function stripPinFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('pin');
+    url.searchParams.delete('code');
+    window.history.replaceState({}, '', url.toString());
+  } catch {}
+}
+
 export default function App() {
   const [pin, setPin] = useState(null);
   const [pendingClip, setPendingClip] = useState(null);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
+    const urlPin = readPinFromUrl();
+    if (urlPin) {
+      checkPin(urlPin).then((res) => {
+        if (res.ok) {
+          if (res.data?.expiresAt) storePin(urlPin, res.data.expiresAt);
+          setPin(urlPin);
+        }
+        stripPinFromUrl();
+        setChecking(false);
+      });
+      return;
+    }
     const stored = loadStoredPin();
     if (!stored) { setChecking(false); return; }
     checkPin(stored.pin).then((res) => {

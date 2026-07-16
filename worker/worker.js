@@ -313,6 +313,16 @@ export default {
         return json({ ok: true, deleted: filename });
       }
 
+      // DELETE /pin/:pin/files — clear R2 files, keep session alive
+      if (method === 'DELETE' && rest === '/files') {
+        const list = await env.MEDIA.list({ prefix: `${pin}/` });
+        const toDelete = list.objects.filter((o) => !o.key.endsWith('/_manifest.json'));
+        await Promise.all(toDelete.map((o) => env.MEDIA.delete(o.key)));
+        manifest.files = [];
+        await saveManifest(env, pin, manifest);
+        return json({ ok: true, deleted: toDelete.length, sessionKept: true });
+      }
+
       // DELETE /pin/:pin
       if (method === 'DELETE' && (rest === '' || rest === '/')) {
         const list = await env.MEDIA.list({ prefix: `${pin}/` });

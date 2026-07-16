@@ -29,6 +29,10 @@ const CORS_HEADERS = {
 
 const PIN_TTL_MS = 24 * 60 * 60 * 1000; // 24h — device-binding for the day
 const RENDER_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for buyer-scan viewer tokens
+// TESTING MODE: once a render has been claimed (device-bound), it expires
+// after 5 min. Lets Captain iterate on stream/playback quality without R2
+// clutter. Un-bound renders still use the full 30-day TTL.
+const PREVIEWED_RENDER_TTL_MS = 5 * 60 * 1000;
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
 
 function newRenderToken() {
@@ -51,6 +55,10 @@ async function saveRenderManifest(env, token, manifest) {
 }
 
 function isRenderExpired(manifest) {
+  // Previewed (device-bound) renders expire 5 min after bind — testing mode.
+  if (manifest.boundAt && Date.now() - manifest.boundAt > PREVIEWED_RENDER_TTL_MS) {
+    return true;
+  }
   return Date.now() - manifest.createdAt > RENDER_TTL_MS;
 }
 
@@ -156,13 +164,17 @@ export default {
 
       // GET /render/:token/meta — non-video status for viewer page
       if (method === 'GET' && rest === '/meta') {
+        // Report the EFFECTIVE expiry (5-min bind-based if claimed, else 30-day).
+        const effectiveExpiresAt = manifest.boundAt
+          ? manifest.boundAt + PREVIEWED_RENDER_TTL_MS
+          : manifest.createdAt + RENDER_TTL_MS;
         return json({
           token,
           hasVideo: manifest.hasVideo,
           sizeBytes: manifest.sizeBytes,
           contentType: manifest.contentType,
           boundDevice: manifest.boundDevice ? 'claimed' : null,
-          expiresAt: manifest.createdAt + RENDER_TTL_MS,
+          expiresAt: effectiveExpiresAt,
         });
       }
 

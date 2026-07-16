@@ -303,6 +303,16 @@ export default {
         return new Response(obj.body, { headers });
       }
 
+      // DELETE /pin/:pin/file/:name — permanent library delete of one clip
+      if (method === 'DELETE' && fileMatch) {
+        const filename = decodeURIComponent(fileMatch[1]);
+        await env.MEDIA.delete(`${pin}/${filename}`);
+        const files = Array.isArray(manifest.files) ? manifest.files : [];
+        manifest.files = files.filter((f) => f && f.filename !== filename);
+        await saveManifest(env, pin, manifest);
+        return json({ ok: true, deleted: filename });
+      }
+
       // DELETE /pin/:pin
       if (method === 'DELETE' && (rest === '' || rest === '/')) {
         const list = await env.MEDIA.list({ prefix: `${pin}/` });

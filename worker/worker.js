@@ -1,15 +1,23 @@
 // ENCORE XO™ sync Worker — 6-digit PIN handshake + R2 clip relay
+//                        + rendered-video device-bound viewer tokens
 //
 // Bindings required (dashboard → Worker → Settings → Bindings):
 //   R2 bucket:  MEDIA  ->  encorexo-media
 //
 // Endpoints:
 //   GET    /health
-//   POST   /pin/new                   -> { pin, ttlMs, expiresAt }
-//   GET    /pin/:pin/list             -> { pin, files, expiresAt }
-//   POST   /pin/:pin/upload?filename= -> { ok, filename, key }
-//   GET    /pin/:pin/file/:name       -> binary blob
-//   DELETE /pin/:pin                  -> { ok, deleted }
+//   POST   /pin/new                       -> { pin, ttlMs, expiresAt }
+//   GET    /pin/:pin/list                 -> { pin, files, expiresAt }
+//   POST   /pin/:pin/upload?filename=     -> { ok, filename, key }
+//   GET    /pin/:pin/file/:name           -> binary blob
+//   DELETE /pin/:pin                      -> { ok, deleted }
+//
+//   Render viewer (device-bound):
+//   POST   /render/new                    -> { token, uploadUrl, viewerUrl, expiresAt }
+//   POST   /render/:token/upload          -> { ok, sizeBytes }
+//   GET    /render/:token/meta            -> { hasVideo, boundDevice, expiresAt }
+//   POST   /render/:token/claim           -> { ok, deviceToken }  (first caller wins)
+//   GET    /render/:token/video?device=X  -> binary stream (403 unless device matches)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -19,7 +27,31 @@ const CORS_HEADERS = {
 };
 
 const PIN_TTL_MS = 24 * 60 * 60 * 1000; // 24h — device-binding for the day
+const RENDER_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for buyer-scan viewer tokens
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
+
+function newRenderToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function loadRenderManifest(env, token) {
+  const obj = await env.MEDIA.get(`renders/${token}/_manifest.json`);
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); }
+  catch { return null; }
+}
+
+async function saveRenderManifest(env, token, manifest) {
+  await env.MEDIA.put(`renders/${token}/_manifest.json`, JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+
+function isRenderExpired(manifest) {
+  return Date.now() - manifest.createdAt > RENDER_TTL_MS;
+}
 
 function withCors(resp) {
   const headers = new Headers(resp.headers);
@@ -66,6 +98,102 @@ export default {
     }
 
     if (pathname === '/health') return json({ ok: true, ts: Date.now() });
+
+    // ------- Rendered-video device-bound viewer -------
+
+    // POST /render/new — mint a token; return upload + viewer URLs
+    if (method === 'POST' && pathname === '/render/new') {
+      const token = newRenderToken();
+      const manifest = {
+        token,
+        createdAt: Date.now(),
+        hasVideo: false,
+        sizeBytes: 0,
+        contentType: '',
+        boundDevice: null,
+        boundAt: null,
+      };
+      await saveRenderManifest(env, token, manifest);
+      return json({
+        token,
+        uploadUrl: `/render/${token}/upload`,
+        viewerUrl: `https://shoot.encorexo.com/v/${token}`,
+        expiresAt: manifest.createdAt + RENDER_TTL_MS,
+      });
+    }
+
+    // /render/:token/...
+    const renderMatch = pathname.match(/^\/render\/([a-f0-9]{32})(\/.*)?$/);
+    if (renderMatch) {
+      const token = renderMatch[1];
+      const rest = renderMatch[2] || '';
+
+      const manifest = await loadRenderManifest(env, token);
+      if (!manifest) return json({ error: 'render-not-found', token }, 404);
+      if (isRenderExpired(manifest)) return json({ error: 'render-expired', token }, 410);
+
+      // POST /render/:token/upload — one-shot only; refuse if video already stored
+      if (method === 'POST' && rest === '/upload') {
+        if (manifest.hasVideo) return json({ error: 'already-uploaded' }, 409);
+        const contentType = request.headers.get('Content-Type') || 'video/webm';
+        const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
+        if (contentLength && contentLength > MAX_FILE_SIZE) {
+          return json({ error: 'too-large', maxBytes: MAX_FILE_SIZE }, 413);
+        }
+        const key = `renders/${token}/video.webm`;
+        await env.MEDIA.put(key, request.body, {
+          httpMetadata: { contentType },
+        });
+        manifest.hasVideo = true;
+        manifest.sizeBytes = contentLength || 0;
+        manifest.contentType = contentType;
+        await saveRenderManifest(env, token, manifest);
+        return json({ ok: true, sizeBytes: manifest.sizeBytes });
+      }
+
+      // GET /render/:token/meta — non-video status for viewer page
+      if (method === 'GET' && rest === '/meta') {
+        return json({
+          token,
+          hasVideo: manifest.hasVideo,
+          sizeBytes: manifest.sizeBytes,
+          contentType: manifest.contentType,
+          boundDevice: manifest.boundDevice ? 'claimed' : null,
+          expiresAt: manifest.createdAt + RENDER_TTL_MS,
+        });
+      }
+
+      // POST /render/:token/claim — first caller wins; returns device token
+      if (method === 'POST' && rest === '/claim') {
+        if (manifest.boundDevice) {
+          return json({ error: 'already-claimed' }, 403);
+        }
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        const deviceToken = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+        manifest.boundDevice = deviceToken;
+        manifest.boundAt = Date.now();
+        await saveRenderManifest(env, token, manifest);
+        return json({ ok: true, deviceToken });
+      }
+
+      // GET /render/:token/video?device=X — device-gated video stream
+      if (method === 'GET' && rest === '/video') {
+        if (!manifest.hasVideo) return json({ error: 'not-uploaded-yet' }, 404);
+        const device = url.searchParams.get('device') || '';
+        if (!manifest.boundDevice) return json({ error: 'not-claimed' }, 403);
+        if (device !== manifest.boundDevice) return json({ error: 'device-mismatch' }, 403);
+        const obj = await env.MEDIA.get(`renders/${token}/video.webm`);
+        if (!obj) return json({ error: 'file-missing' }, 404);
+        const headers = new Headers(CORS_HEADERS);
+        headers.set('Content-Type', manifest.contentType || 'video/webm');
+        headers.set('Cache-Control', 'private, no-cache');
+        headers.set('Accept-Ranges', 'bytes');
+        return new Response(obj.body, { headers });
+      }
+    }
+    // ------- end render endpoints -------
+
 
     // POST /pin/new
     if (method === 'POST' && pathname === '/pin/new') {

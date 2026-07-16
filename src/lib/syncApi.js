@@ -1,5 +1,24 @@
 const API_BASE = 'https://summer-queen-bb7c.natx3.workers.dev';
 
+export async function fetchRenderMeta(token) {
+  const res = await fetch(`${API_BASE}/render/${token}/meta`);
+  if (res.status === 404) return { ok: false, reason: 'not-found' };
+  if (res.status === 410) return { ok: false, reason: 'expired' };
+  if (!res.ok) return { ok: false, reason: 'network' };
+  return { ok: true, data: await res.json() };
+}
+
+export async function claimRenderDevice(token) {
+  const res = await fetch(`${API_BASE}/render/${token}/claim`, { method: 'POST' });
+  if (res.status === 403) return { ok: false, reason: 'already-claimed' };
+  if (!res.ok) return { ok: false, reason: 'network' };
+  return { ok: true, data: await res.json() };
+}
+
+export function renderVideoUrl(token, deviceToken) {
+  return `${API_BASE}/render/${token}/video?device=${encodeURIComponent(deviceToken)}`;
+}
+
 export async function checkPin(pin) {
   const res = await fetch(`${API_BASE}/pin/${pin}/list`);
   if (res.status === 404) return { ok: false, reason: 'not-found' };

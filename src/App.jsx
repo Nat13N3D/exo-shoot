@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import PinEntry from './components/PinEntry.jsx';
 import CameraCapture from './components/CameraCapture.jsx';
 import ClipPreview from './components/ClipPreview.jsx';
+import RenderViewer from './components/RenderViewer.jsx';
 import { checkPin } from './lib/syncApi.js';
 
 const STORAGE_KEY = 'exo_shoot_pin';
@@ -44,7 +45,21 @@ function stripPinFromUrl() {
   } catch {}
 }
 
+function readViewerToken() {
+  try {
+    const m = window.location.pathname.match(/^\/v\/([a-f0-9]{32})\/?$/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
 export default function App() {
+  const viewerToken = readViewerToken();
+  if (viewerToken) return <RenderViewer token={viewerToken} />;
+
+  return <PairFlow />;
+}
+
+function PairFlow() {
   const [pin, setPin] = useState(null);
   const [pendingClip, setPendingClip] = useState(null);
   const [checking, setChecking] = useState(true);

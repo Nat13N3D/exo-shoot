@@ -22,8 +22,8 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Range',
-  'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+  'Access-Control-Allow-Headers': 'Content-Type, Range, If-Range, If-None-Match',
+  'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, ETag',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -194,6 +194,10 @@ export default {
 
       // GET /render/:token/video?device=X — device-gated video stream
       // Handles Range: requests (206 Partial Content) so iOS Safari can seek.
+      // Stable strong ETag + private cache: iOS Safari fires many Range
+      // requests during playback; without a stable validator it silently
+      // stalls when revalidation-forced 206s land inconsistently. ETag is
+      // derived from immutable token + sizeBytes so it never drifts.
       if (method === 'GET' && rest === '/video') {
         if (!manifest.hasVideo) return json({ error: 'not-uploaded-yet' }, 404);
         const device = url.searchParams.get('device') || '';
@@ -202,6 +206,8 @@ export default {
         const ext = manifest.fileExt || (manifest.contentType?.startsWith('video/mp4') ? 'mp4' : 'webm');
         const key = `renders/${token}/video.${ext}`;
         const contentType = manifest.contentType || (ext === 'mp4' ? 'video/mp4' : 'video/webm');
+        const etag = `"${token}-${manifest.sizeBytes}"`;
+        const cacheControl = 'private, max-age=3600';
 
         const rangeHeader = request.headers.get('Range');
         if (rangeHeader) {
@@ -219,8 +225,9 @@ export default {
             const actualEnd = end !== undefined ? end : total - 1;
             const headers = new Headers(CORS_HEADERS);
             headers.set('Content-Type', contentType);
-            headers.set('Cache-Control', 'private, no-cache');
+            headers.set('Cache-Control', cacheControl);
             headers.set('Accept-Ranges', 'bytes');
+            headers.set('ETag', etag);
             headers.set('Content-Range', `bytes ${start}-${actualEnd}/${total}`);
             headers.set('Content-Length', String(actualEnd - start + 1));
             return new Response(obj.body, { status: 206, headers });
@@ -231,8 +238,9 @@ export default {
         if (!obj) return json({ error: 'file-missing' }, 404);
         const headers = new Headers(CORS_HEADERS);
         headers.set('Content-Type', contentType);
-        headers.set('Cache-Control', 'private, no-cache');
+        headers.set('Cache-Control', cacheControl);
         headers.set('Accept-Ranges', 'bytes');
+        headers.set('ETag', etag);
         headers.set('Content-Length', String(manifest.sizeBytes));
         return new Response(obj.body, { headers });
       }

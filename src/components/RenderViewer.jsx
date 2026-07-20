@@ -24,6 +24,7 @@ function saveDeviceMap(map) {
 export default function RenderViewer({ token }) {
   const [state, setState] = useState('loading'); // loading | ready | not-found | expired | bound-elsewhere | error
   const [videoSrc, setVideoSrc] = useState('');
+  const [videoReady, setVideoReady] = useState(false);
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -122,14 +123,45 @@ export default function RenderViewer({ token }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
+      <style>{`@keyframes exoBufferSpin { to { transform: rotate(360deg); } }`}</style>
       <video
         ref={videoRef}
         src={videoSrc}
         controls
         playsInline
         autoPlay
+        preload="auto"
+        onCanPlay={() => setVideoReady(true)}
+        onLoadedData={() => setVideoReady(true)}
         style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
       />
+      {!videoReady && (
+        <div
+          style={{
+            position: 'absolute', inset: 0, background: '#000',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 28,
+          }}
+        >
+          <img
+            src="/encorexo-logo.png"
+            alt=""
+            draggable={false}
+            style={{
+              width: 200, maxWidth: '60vw',
+              filter: 'drop-shadow(0 0 24px rgba(212,175,55,0.5))',
+            }}
+          />
+          <div
+            style={{
+              width: 44, height: 44, borderRadius: '50%',
+              border: '3px solid rgba(212,175,55,0.25)',
+              borderTopColor: '#d4af37',
+              animation: 'exoBufferSpin 0.9s linear infinite',
+            }}
+          />
+        </div>
+      )}
       <div
         style={{
           position: 'absolute', top: 12, left: 0, right: 0, textAlign: 'center',

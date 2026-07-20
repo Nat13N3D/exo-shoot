@@ -145,6 +145,52 @@ async function safeJson(request) {
   try { return await request.json(); } catch { return null; }
 }
 
+// ---------------- EMAIL (Resend) ----------------
+// Free-tier sender: onboarding@resend.dev — no domain verification needed.
+// Reply-To is set to env.ADMIN_EMAIL so operator replies land in that inbox.
+// Failures are logged but do NOT throw — email is best-effort, never blocks
+// account/render flows.
+async function sendEmail(env, { to, subject, html, text, replyTo }) {
+  const key = env.RESEND_API_KEY;
+  if (!key) {
+    console.warn('[EMAIL] RESEND_API_KEY not set — skipping send to', to);
+    return { ok: false, reason: 'no-key' };
+  }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        from: 'ENCORE XO <onboarding@resend.dev>',
+        to: Array.isArray(to) ? to : [to],
+        subject,
+        html: html || undefined,
+        text: text || undefined,
+        reply_to: replyTo || env.ADMIN_EMAIL || undefined,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn('[EMAIL] send failed', res.status, body);
+      return { ok: false, status: res.status, body };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, id: data.id };
+  } catch (e) {
+    console.warn('[EMAIL] send threw', e?.message || e);
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function newRenderToken() {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -546,6 +592,26 @@ export default {
             resubmissionReason: reason,
           };
           await saveAccount(env, accountId, acct);
+
+          // Job 4: email the artist with the reason + link to redo it.
+          const dispName = escapeHtml(acct.displayName || '');
+          const reasonEsc = escapeHtml(reason);
+          const editorLink = 'https://encore-editor.pages.dev';
+          const html = `
+            <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background: #0a0a0a; color: #e0d0ff;">
+              <div style="font-size: 18px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; margin-bottom: 18px;">ENCORE XO&trade;</div>
+              <div style="font-size: 13px; letter-spacing: 0.16em; color: #d4af37; font-weight: 700;">PLEASE RESUBMIT YOUR APPLICATION</div>
+              <p style="line-height: 1.7;">Hi ${dispName},</p>
+              <p style="line-height: 1.7;">We reviewed your documentation and need one small adjustment before we can activate your account. Please resubmit with the change below.</p>
+              <div style="background: #161020; border: 1px solid #4a3560; border-radius: 4px; padding: 14px 18px; margin: 14px 0; line-height: 1.7;">${reasonEsc}</div>
+              <p><a href="${editorLink}" style="display: inline-block; background: #d4af37; color: #0a0a0a; padding: 10px 22px; text-decoration: none; border-radius: 3px; font-weight: 700; letter-spacing: 0.18em; margin-top: 8px;">RESUBMIT ON ENCOREXO</a></p>
+            </div>`;
+          sendEmail(env, {
+            to: acct.email,
+            subject: 'Please resubmit your ENCORE XO documentation',
+            html,
+          }).catch(() => {});
+
           return json({ ok: true, account: publicAccount(acct) });
         }
 
@@ -719,6 +785,36 @@ export default {
         resubmissionReason: null,
       };
       await saveAccount(env, sess.accountId, m);
+
+      // Job 4: alert the admin so she can be reviewed.
+      const adminTo = env.ADMIN_EMAIL || 'admin@seventy7g.com';
+      const dispName = escapeHtml(m.displayName);
+      const stage = m.stageName ? ` · ${escapeHtml(m.stageName)}` : '';
+      const emailForBody = escapeHtml(m.email);
+      const legalNameEsc = escapeHtml(legalName);
+      const dobEsc = escapeHtml(dob);
+      const adminLink = 'https://encore-editor.pages.dev/admin';
+      const html = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background: #0a0a0a; color: #e0d0ff;">
+          <div style="font-size: 18px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; margin-bottom: 18px;">ENCORE XO&trade;</div>
+          <div style="font-size: 13px; letter-spacing: 0.16em; color: #d4af37; font-weight: 700;">NEW ARTIST PENDING REVIEW</div>
+          <p style="line-height: 1.7;">
+            <strong>${dispName}${stage}</strong> just submitted her 2257 documentation.
+          </p>
+          <ul style="line-height: 1.9; padding-left: 20px;">
+            <li>Email: ${emailForBody}</li>
+            <li>Legal name: ${legalNameEsc}</li>
+            <li>DOB: ${dobEsc}</li>
+          </ul>
+          <p><a href="${adminLink}" style="display: inline-block; background: #d4af37; color: #0a0a0a; padding: 10px 22px; text-decoration: none; border-radius: 3px; font-weight: 700; letter-spacing: 0.18em; margin-top: 8px;">OPEN ADMIN DASHBOARD</a></p>
+        </div>`;
+      // Fire-and-forget — never blocks the submit.
+      sendEmail(env, {
+        to: adminTo,
+        subject: `New EXO artist pending review — ${m.displayName}`,
+        html,
+      }).catch(() => {});
+
       return json({ ok: true, verification2257: m.verification2257 });
     }
 

@@ -3,6 +3,7 @@ import PinEntry from './components/PinEntry.jsx';
 import CameraCapture from './components/CameraCapture.jsx';
 import ClipPreview from './components/ClipPreview.jsx';
 import RenderViewer from './components/RenderViewer.jsx';
+import JoinInvite from './components/JoinInvite.jsx';
 import { checkPin } from './lib/syncApi.js';
 
 const STORAGE_KEY = 'exo_shoot_pin';
@@ -52,9 +53,20 @@ function readViewerToken() {
   } catch { return null; }
 }
 
+function readInviteCode() {
+  try {
+    // /join/A3F9-K2LP-8QM6 or /join/A3F9K2LP8QM6 — allow with or without dashes
+    const m = window.location.pathname.match(/^\/join\/([A-Za-z0-9-]{12,14})\/?$/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
 export default function App() {
   const viewerToken = readViewerToken();
   if (viewerToken) return <RenderViewer token={viewerToken} />;
+
+  const inviteCode = readInviteCode();
+  if (inviteCode) return <JoinInvite code={inviteCode} />;
 
   return <PairFlow />;
 }

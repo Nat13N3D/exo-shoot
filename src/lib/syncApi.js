@@ -28,6 +28,44 @@ export async function checkPin(pin) {
   return { ok: true, data };
 }
 
+// ---------------- INVITE (phone-side) ----------------
+
+export async function fetchInvite(code) {
+  const res = await fetch(`${API_BASE}/invite/${encodeURIComponent(code)}`);
+  if (res.status === 404) return { ok: false, reason: 'not-found' };
+  if (res.status === 410) return { ok: false, reason: 'expired' };
+  if (!res.ok) return { ok: false, reason: 'network' };
+  return { ok: true, data: await res.json() };
+}
+
+export async function pairInvitePhone(code, phoneModel) {
+  const res = await fetch(`${API_BASE}/invite/${encodeURIComponent(code)}/pair-phone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phoneModel }),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+export async function rsvpAcceptInvite(code, phoneDeviceToken) {
+  const res = await fetch(`${API_BASE}/invite/${encodeURIComponent(code)}/rsvp-accept`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Phone-Token': phoneDeviceToken },
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+export async function forfeitInvite(code, phoneDeviceToken) {
+  const res = await fetch(`${API_BASE}/invite/${encodeURIComponent(code)}/forfeit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Phone-Token': phoneDeviceToken },
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
 export async function uploadClip(pin, blob, filename, onProgress) {
   const url = `${API_BASE}/pin/${pin}/upload?filename=${encodeURIComponent(filename)}`;
   return new Promise((resolve, reject) => {

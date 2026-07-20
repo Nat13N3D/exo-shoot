@@ -843,20 +843,37 @@ export default {
 
     // ------- ACCOUNT ENDPOINTS -------
 
-    // POST /account/create — { email, password, displayName, stageName }
+    // POST /account/create — invite-gated (Job 8)
+    // Body: { inviteCode, password, email, displayName, stageName }
+    //   inviteCode + password come from the artist's phone (scanned QR + wizard)
+    //   Invite must be phone-paired or rsvp-hold (not consumed / not forfeited)
+    //   On success: consume invite, link phoneDeviceToken to new account
     if (method === 'POST' && pathname === '/account/create') {
       const body = await safeJson(request);
       if (!body) return json({ error: 'invalid-body' }, 400);
-      const email = normalizeEmail(body.email);
+      const inviteCode = normalizeInviteCode(body.inviteCode);
       const password = String(body.password || '');
+      const email = normalizeEmail(body.email);
       const displayName = String(body.displayName || '').trim();
       const stageName = String(body.stageName || '').trim();
-      if (!email || !password || !displayName) {
-        return json({ error: 'missing-fields' }, 400);
+      if (!inviteCode) return json({ error: 'invite-required' }, 400);
+      if (!email || !password || !displayName) return json({ error: 'missing-fields' }, 400);
+
+      const inv = await loadInvite(env, inviteCode);
+      if (!inv) return json({ error: 'invite-not-found' }, 404);
+      if (inv.status === 'consumed') return json({ error: 'invite-consumed' }, 409);
+      if (inv.status === 'forfeited') return json({ error: 'invite-forfeited' }, 410);
+      if (inviteIsRsvpExpired(inv)) return json({ error: 'invite-expired' }, 410);
+      if (inv.status !== 'phone-paired' && inv.status !== 'rsvp-hold') {
+        return json({ error: 'invite-not-paired', hint: 'scan the QR on your phone first' }, 400);
       }
-      if (password.length < 8) return json({ error: 'password-too-short' }, 400);
+      if (!inv.password || password !== inv.password) {
+        return json({ error: 'password-mismatch' }, 401);
+      }
+
       const existingId = await loadAccountIdByEmail(env, email);
       if (existingId) return json({ error: 'email-taken' }, 409);
+
       const accountId = newAccountId();
       const { hash, salt } = await hashPassword(password);
       const manifest = {
@@ -867,8 +884,14 @@ export default {
         displayName,
         stageName,
         createdAt: Date.now(),
+        // Phone auto-paired at signup — no separate SYNC PHONE flow needed
+        // for the invite path. Sync uploads from her phone with this token
+        // route to her account.
+        pairedPhoneDeviceToken: inv.phoneDeviceToken || null,
+        pairedPhoneModel: inv.phoneModel || null,
+        invitedByCode: inviteCode,
         verification2257: {
-          status: 'not_started', // not_started | pending | approved | rejected
+          status: 'not_started',
           submittedAt: null,
           reviewedAt: null,
           legalName: null,
@@ -878,6 +901,15 @@ export default {
       };
       await saveAccount(env, accountId, manifest);
       await saveEmailIndex(env, email, accountId);
+
+      // Consume the invite atomically after account save. Clear the
+      // password field for hygiene — it's now the account's password.
+      inv.status = 'consumed';
+      inv.consumedBy = accountId;
+      inv.consumedAt = Date.now();
+      inv.password = null;
+      await saveInvite(env, inviteCode, inv);
+
       const token = newSessionToken();
       await saveSession(env, token, {
         accountId, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS,
@@ -1043,6 +1075,8 @@ function publicAccount(m) {
     displayName: m.displayName,
     stageName: m.stageName,
     createdAt: m.createdAt,
+    pairedPhoneModel: m.pairedPhoneModel || null,
+    invitedByCode: m.invitedByCode || null,
     verification2257: m.verification2257,
     magazineSubmissions: m.magazineSubmissions || [],
   };

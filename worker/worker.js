@@ -461,6 +461,121 @@ export default {
       }
     }
 
+    // ------- ADMIN ENDPOINTS (Bearer ADMIN_SECRET) -------
+    if (pathname.startsWith('/admin/')) {
+      const auth = request.headers.get('Authorization') || '';
+      const m = auth.match(/^Bearer\s+(.+)$/i);
+      const provided = m ? m[1] : '';
+      const expected = env.ADMIN_SECRET || '';
+      if (!expected || provided !== expected) {
+        return json({ error: 'admin-auth-required' }, 401);
+      }
+
+      // GET /admin/accounts?status=&search=
+      if (method === 'GET' && pathname === '/admin/accounts') {
+        const statusFilter = (url.searchParams.get('status') || '').toLowerCase();
+        const search = (url.searchParams.get('search') || '').toLowerCase();
+        const list = await env.MEDIA.list({ prefix: 'account/' });
+        const manifests = [];
+        for (const obj of list.objects) {
+          if (!obj.key.endsWith('/_manifest.json')) continue;
+          if (obj.key.startsWith('account/_')) continue; // skip _email _session index
+          const r = await env.MEDIA.get(obj.key);
+          if (!r) continue;
+          let m;
+          try { m = JSON.parse(await r.text()); } catch { continue; }
+          if (statusFilter && (m.verification2257?.status || 'not_started') !== statusFilter) continue;
+          if (search) {
+            const hay = `${m.email || ''} ${m.displayName || ''} ${m.stageName || ''}`.toLowerCase();
+            if (!hay.includes(search)) continue;
+          }
+          manifests.push(publicAccount(m));
+        }
+        manifests.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        return json({ ok: true, accounts: manifests, count: manifests.length });
+      }
+
+      // /admin/account/:id/...
+      const acctMatch = pathname.match(/^\/admin\/account\/([A-Za-z0-9_]+)(\/.*)?$/);
+      if (acctMatch) {
+        const accountId = acctMatch[1];
+        const rest = acctMatch[2] || '';
+        const acct = await loadAccount(env, accountId);
+        if (!acct) return json({ error: 'account-not-found', accountId }, 404);
+
+        // GET /admin/account/:id
+        if (method === 'GET' && rest === '') {
+          return json({ ok: true, account: publicAccount(acct) });
+        }
+
+        // GET /admin/account/:id/2257/:type
+        const fileMatch = rest.match(/^\/2257\/(id-front|id-back|selfie)$/);
+        if (method === 'GET' && fileMatch) {
+          const type = fileMatch[1];
+          const jpg = await env.MEDIA.get(`account/${accountId}/2257/${type}.jpg`);
+          const png = jpg ? null : await env.MEDIA.get(`account/${accountId}/2257/${type}.png`);
+          const obj = jpg || png;
+          if (!obj) return json({ error: 'file-not-found', type }, 404);
+          const headers = new Headers(CORS_HEADERS);
+          headers.set('Content-Type', obj.httpMetadata?.contentType || 'image/jpeg');
+          headers.set('Cache-Control', 'private, no-store');
+          return new Response(obj.body, { headers });
+        }
+
+        // POST /admin/account/:id/approve
+        if (method === 'POST' && rest === '/approve') {
+          acct.verification2257 = {
+            ...acct.verification2257,
+            status: 'approved',
+            reviewedAt: Date.now(),
+            resubmissionReason: null,
+          };
+          await saveAccount(env, accountId, acct);
+          return json({ ok: true, account: publicAccount(acct) });
+        }
+
+        // POST /admin/account/:id/resubmit — { reason }
+        if (method === 'POST' && rest === '/resubmit') {
+          const body = await safeJson(request);
+          const reason = String(body?.reason || '').trim();
+          if (!reason) return json({ error: 'reason-required' }, 400);
+          acct.verification2257 = {
+            ...acct.verification2257,
+            status: 'resubmission_required',
+            reviewedAt: Date.now(),
+            resubmissionReason: reason,
+          };
+          await saveAccount(env, accountId, acct);
+          return json({ ok: true, account: publicAccount(acct) });
+        }
+
+        // DELETE /admin/account/:id — hard delete (manifest + email index + sessions + 2257 files)
+        if (method === 'DELETE' && rest === '') {
+          const email = acct.email;
+          // Delete all files under account/{id}/
+          const list = await env.MEDIA.list({ prefix: `account/${accountId}/` });
+          await Promise.all(list.objects.map((o) => env.MEDIA.delete(o.key)));
+          // Delete email index
+          if (email) {
+            try { await env.MEDIA.delete(`account/_email/${normalizeEmail(email)}.txt`); } catch {}
+          }
+          // Delete session records that point to this account
+          const sessList = await env.MEDIA.list({ prefix: 'account/_session/' });
+          for (const so of sessList.objects) {
+            try {
+              const sr = await env.MEDIA.get(so.key);
+              if (!sr) continue;
+              const s = JSON.parse(await sr.text());
+              if (s.accountId === accountId) await env.MEDIA.delete(so.key);
+            } catch {}
+          }
+          return json({ ok: true, deleted: accountId, emailFreed: email });
+        }
+      }
+
+      return json({ error: 'admin-route-not-found', method, path: pathname }, 404);
+    }
+
     // ------- ACCOUNT ENDPOINTS -------
 
     // POST /account/create — { email, password, displayName, stageName }

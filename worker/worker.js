@@ -212,6 +212,31 @@ function publicInvite(m, opts = {}) {
 // Admin-view — full manifest minus nothing.
 function adminInvite(m) { return { ...m }; }
 
+// ---------------- ADMIN PASSWORD (mutable, self-service) ----------------
+// Priority:
+//   1. R2 admin/_password.json (hashed) — set via /admin/change-password
+//   2. env.ADMIN_SECRET plaintext — bootstrap only; once R2 exists, ignored.
+async function loadAdminPasswordRecord(env) {
+  const obj = await env.MEDIA.get('admin/_password.json');
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch { return null; }
+}
+async function saveAdminPasswordRecord(env, record) {
+  await env.MEDIA.put('admin/_password.json', JSON.stringify(record), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+async function checkAdminPassword(env, provided) {
+  if (!provided) return false;
+  const rec = await loadAdminPasswordRecord(env);
+  if (rec && rec.passwordHash && rec.passwordSalt) {
+    return await verifyPassword(provided, rec.passwordHash, rec.passwordSalt);
+  }
+  // Bootstrap: env.ADMIN_SECRET literal match.
+  const boot = env.ADMIN_SECRET || '';
+  return !!boot && provided === boot;
+}
+
 // ---------------- EMAIL (Resend) ----------------
 // Free-tier sender: onboarding@resend.dev — no domain verification needed.
 // Reply-To is set to env.ADMIN_EMAIL so operator replies land in that inbox.
@@ -574,14 +599,31 @@ export default {
       }
     }
 
-    // ------- ADMIN ENDPOINTS (Bearer ADMIN_SECRET) -------
+    // ------- ADMIN ENDPOINTS (Bearer <admin password>) -------
     if (pathname.startsWith('/admin/')) {
       const auth = request.headers.get('Authorization') || '';
       const m = auth.match(/^Bearer\s+(.+)$/i);
       const provided = m ? m[1] : '';
-      const expected = env.ADMIN_SECRET || '';
-      if (!expected || provided !== expected) {
+      const ok = await checkAdminPassword(env, provided);
+      if (!ok) {
         return json({ error: 'admin-auth-required' }, 401);
+      }
+
+      // POST /admin/change-password  { newPassword }
+      // Authorization Bearer must be the CURRENT admin password.
+      if (method === 'POST' && pathname === '/admin/change-password') {
+        const body = await safeJson(request);
+        const newPassword = String(body?.newPassword || '');
+        if (newPassword.length < 8) {
+          return json({ error: 'password-too-short', min: 8 }, 400);
+        }
+        const { hash, salt } = await hashPassword(newPassword);
+        await saveAdminPasswordRecord(env, {
+          passwordHash: hash,
+          passwordSalt: salt,
+          updatedAt: Date.now(),
+        });
+        return json({ ok: true });
       }
 
       // GET /admin/accounts?status=&search=

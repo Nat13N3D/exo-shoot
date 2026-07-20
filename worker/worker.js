@@ -36,7 +36,7 @@ const PREVIEWED_RENDER_TTL_MS = 5 * 60 * 1000;
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 day sliding session
 const MAX_2257_FILE_SIZE = 20 * 1024 * 1024;     // 20 MB per ID/selfie
-const PBKDF2_ITERS = 200_000;
+const PBKDF2_ITERS = 100_000; // Cloudflare Workers hard-cap PBKDF2 iterations at 100k
 
 // ---------------- ACCOUNT HELPERS ----------------
 

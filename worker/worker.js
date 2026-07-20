@@ -663,7 +663,7 @@ export default {
           // Job 4: email the artist with the reason + link to redo it.
           const dispName = escapeHtml(acct.displayName || '');
           const reasonEsc = escapeHtml(reason);
-          const editorLink = 'https://encore-editor.pages.dev';
+          const editorLink = 'https://editor.encorexo.com';
           const html = `
             <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background: #0a0a0a; color: #e0d0ff;">
               <div style="font-size: 18px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; margin-bottom: 18px;">ENCORE XO&trade;</div>
@@ -1024,7 +1024,7 @@ export default {
       const emailForBody = escapeHtml(m.email);
       const legalNameEsc = escapeHtml(legalName);
       const dobEsc = escapeHtml(dob);
-      const adminLink = 'https://encore-editor.pages.dev/admin';
+      const adminLink = 'https://editor.encorexo.com/admin';
       const html = `
         <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background: #0a0a0a; color: #e0d0ff;">
           <div style="font-size: 18px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; margin-bottom: 18px;">ENCORE XO&trade;</div>

@@ -238,7 +238,7 @@ export default function JoinInvite({ code }) {
   if (step === 'code-display') {
     return <FullPanel>
       <Brand />
-      <div style={{ ...heading, marginTop: 18 }}>OPEN encore-editor.com ON YOUR LAPTOP</div>
+      <div style={{ ...heading, marginTop: 18 }}>OPEN editor.encorexo.com ON YOUR LAPTOP</div>
       <CodeBox label="INVITE CODE" value={invite.code} />
       <CodeBox label="PASSWORD" value={invite.password} />
       <Muted style={{ marginTop: 14, fontSize: 10, textAlign: 'center', maxWidth: 320 }}>

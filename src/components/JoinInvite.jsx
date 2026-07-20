@@ -26,17 +26,15 @@ const INPUT_BG = '#0f0a18';
 const TEXT = '#e0d0ff';
 const MUTED = '#8a7a9e';
 
+// Prestige-tier only. Curated equivalents to iPhone 12 Pro camera lineage.
+// Any additions/removals: talk to Captain — this is part of the vetting
+// standard, not a UI convenience.
 const APPROVED_PHONES = [
-  'iPhone 12 Pro',
-  'iPhone 12 Pro Max',
-  'iPhone 13 Pro',
-  'iPhone 13 Pro Max',
-  'iPhone 14 Pro',
-  'iPhone 14 Pro Max',
-  'iPhone 15 Pro',
-  'iPhone 15 Pro Max',
-  'iPhone 16 Pro',
-  'iPhone 16 Pro Max',
+  'iPhone 12 Pro or newer',
+  'Samsung Galaxy S22 Ultra or newer',
+  'Google Pixel 7 Pro or newer',
+  'Sony Xperia 1 IV or newer',
+  'OnePlus 11 or newer',
 ];
 
 const PHONE_TOKEN_STORAGE_PREFIX = 'exo_invite_token_';
@@ -191,19 +189,32 @@ export default function JoinInvite({ code }) {
       <Brand />
       <div style={{ ...heading, marginTop: 18 }}>CONTENT MUST BE UPLOADED FROM AN APPROVED PHONE</div>
       <div style={{ marginTop: 10, width: '100%', maxWidth: 320 }}>
-        {APPROVED_PHONES.map((p) => (
-          <label key={p} style={radioRow}>
-            <input
-              type="radio"
-              name="phone"
-              value={p}
-              checked={phoneModel === p}
-              onChange={() => setPhoneModel(p)}
-              style={{ marginRight: 10 }}
-            />
-            {p}
-          </label>
-        ))}
+        {APPROVED_PHONES.map((p) => {
+          const selected = phoneModel === p;
+          return (
+            <label
+              key={p}
+              style={{
+                ...radioRow,
+                background: selected ? 'rgba(212,175,55,0.16)' : INPUT_BG,
+                borderLeft: `3px solid ${selected ? GOLD : 'transparent'}`,
+                color: selected ? '#ffffff' : TEXT,
+                fontWeight: selected ? 700 : 400,
+                transition: 'background 120ms, border-color 120ms',
+              }}
+            >
+              <input
+                type="radio"
+                name="phone"
+                value={p}
+                checked={selected}
+                onChange={() => setPhoneModel(p)}
+                style={{ marginRight: 10, accentColor: GOLD }}
+              />
+              {p}
+            </label>
+          );
+        })}
       </div>
       <label style={{ ...radioRow, marginTop: 14, borderTop: `1px solid ${BORDER}`, paddingTop: 14, width: '100%', maxWidth: 320 }}>
         <input

@@ -22,7 +22,7 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Range, If-Range, If-None-Match, Authorization',
+  'Access-Control-Allow-Headers': 'Content-Type, Range, If-Range, If-None-Match, Authorization, X-Phone-Token',
   'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, ETag',
   'Access-Control-Max-Age': '86400',
 };
@@ -144,6 +144,73 @@ async function resolveSession(env, request) {
 async function safeJson(request) {
   try { return await request.json(); } catch { return null; }
 }
+
+// ---------------- INVITE HELPERS ----------------
+// Invite code: 12 alphanumeric chars, uppercase, dashed 4-4-4 (A3F9-K2LP-8QM6).
+// Alphabet excludes 0/O and 1/I/L to avoid handwritten/QR-scan ambiguity.
+const INVITE_CODE_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// Password: 10 mixed-case alphanumeric chars — typeable in one shot on
+// desktop after reading off phone screen. She can rotate later.
+const INVITE_PASSWORD_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+const INVITE_CODE_LEN = 12;
+const INVITE_PASSWORD_LEN = 10;
+const INVITE_RSVP_TTL_MS = 24 * 60 * 60 * 1000; // 24-hour hold after ACCEPT
+
+function pickFromAlphabet(alpha, len) {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => alpha[b % alpha.length]).join('');
+}
+function generateInviteCode() {
+  const raw = pickFromAlphabet(INVITE_CODE_ALPHA, INVITE_CODE_LEN);
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+}
+function generateInvitePassword() {
+  return pickFromAlphabet(INVITE_PASSWORD_ALPHA, INVITE_PASSWORD_LEN);
+}
+function newPhoneDeviceToken() {
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+function normalizeInviteCode(s) {
+  // Accept "a3f9k2lp8qm6" or "A3F9-K2LP-8QM6" or spaces — normalize to
+  // uppercase dashed 4-4-4 for lookup.
+  const clean = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (clean.length !== INVITE_CODE_LEN) return null;
+  return `${clean.slice(0, 4)}-${clean.slice(4, 8)}-${clean.slice(8, 12)}`;
+}
+async function loadInvite(env, code) {
+  const obj = await env.MEDIA.get(`invite/${code}/_manifest.json`);
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch { return null; }
+}
+async function saveInvite(env, code, manifest) {
+  await env.MEDIA.put(`invite/${code}/_manifest.json`, JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+function inviteIsRsvpExpired(m) {
+  return m.status === 'rsvp-hold' && m.rsvpExpiresAt && Date.now() > m.rsvpExpiresAt;
+}
+// Phone-safe subset — never leak internal fields or the deviceToken
+// beyond the phone that owns it. Password IS included so the paired
+// phone can display it for the artist to type on desktop.
+function publicInvite(m, opts = {}) {
+  const base = {
+    code: m.code,
+    status: m.status,
+    createdAt: m.createdAt,
+    phoneModel: m.phoneModel || null,
+    rsvpExpiresAt: m.rsvpExpiresAt || null,
+    consumedAt: m.consumedAt || null,
+  };
+  if (opts.includePassword) base.password = m.password;
+  if (opts.includeDeviceToken) base.phoneDeviceToken = m.phoneDeviceToken;
+  return base;
+}
+// Admin-view — full manifest minus nothing.
+function adminInvite(m) { return { ...m }; }
 
 // ---------------- EMAIL (Resend) ----------------
 // Free-tier sender: onboarding@resend.dev — no domain verification needed.
@@ -642,7 +709,136 @@ export default {
         }
       }
 
+      // ------- ADMIN INVITE ENDPOINTS -------
+
+      // POST /admin/invites/generate { count }
+      if (method === 'POST' && pathname === '/admin/invites/generate') {
+        const body = await safeJson(request);
+        const count = Math.max(1, Math.min(200, parseInt(body?.count, 10) || 0));
+        if (!count) return json({ error: 'bad-count' }, 400);
+        const invites = [];
+        for (let i = 0; i < count; i++) {
+          // Collision guard: retry up to 5x if the code already exists.
+          let code = generateInviteCode();
+          for (let k = 0; k < 5 && await loadInvite(env, code); k++) code = generateInviteCode();
+          const password = generateInvitePassword();
+          const manifest = {
+            code,
+            password,
+            createdAt: Date.now(),
+            status: 'unused',
+            phoneDeviceToken: null,
+            phoneModel: null,
+            phoneScannedAt: null,
+            rsvpAcceptedAt: null,
+            rsvpExpiresAt: null,
+            consumedBy: null,
+            consumedAt: null,
+            forfeitedAt: null,
+          };
+          await saveInvite(env, code, manifest);
+          invites.push(adminInvite(manifest));
+        }
+        return json({ ok: true, count: invites.length, invites });
+      }
+
+      // GET /admin/invites
+      if (method === 'GET' && pathname === '/admin/invites') {
+        const list = await env.MEDIA.list({ prefix: 'invite/' });
+        const invites = [];
+        for (const obj of list.objects) {
+          if (!obj.key.endsWith('/_manifest.json')) continue;
+          const r = await env.MEDIA.get(obj.key);
+          if (!r) continue;
+          try { invites.push(adminInvite(JSON.parse(await r.text()))); } catch {}
+        }
+        invites.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        return json({ ok: true, count: invites.length, invites });
+      }
+
+      // DELETE /admin/invite/:code — hard delete a single invite
+      const invMatch = pathname.match(/^\/admin\/invite\/([A-Z0-9-]{14})$/);
+      if (method === 'DELETE' && invMatch) {
+        const code = normalizeInviteCode(invMatch[1]);
+        if (!code) return json({ error: 'bad-code' }, 400);
+        try { await env.MEDIA.delete(`invite/${code}/_manifest.json`); } catch {}
+        return json({ ok: true, deleted: code });
+      }
+
       return json({ error: 'admin-route-not-found', method, path: pathname }, 404);
+    }
+
+    // ------- PUBLIC INVITE ENDPOINTS (phone-side) -------
+    // GET  /invite/:code                    → status + password + phoneModel (no deviceToken)
+    // POST /invite/:code/pair-phone         → issues phoneDeviceToken, sets status phone-paired
+    // POST /invite/:code/rsvp-accept        → status rsvp-hold, rsvpExpiresAt = now+24h
+    // POST /invite/:code/forfeit            → status forfeited (hard end)
+    const publicInviteMatch = pathname.match(/^\/invite\/([A-Za-z0-9-]{12,14})(\/.*)?$/);
+    if (publicInviteMatch) {
+      const code = normalizeInviteCode(publicInviteMatch[1]);
+      const rest = publicInviteMatch[2] || '';
+      if (!code) return json({ error: 'bad-code' }, 400);
+      const inv = await loadInvite(env, code);
+      if (!inv) return json({ error: 'invite-not-found' }, 404);
+
+      // If forfeited, only allow GET (to show "This invite is closed").
+      // If rsvp-hold expired, treat as forfeited for public purposes.
+      if (inviteIsRsvpExpired(inv)) {
+        inv.status = 'forfeited';
+        inv.forfeitedAt = Date.now();
+        await saveInvite(env, code, inv);
+      }
+
+      // GET /invite/:code
+      if (method === 'GET' && rest === '') {
+        return json({ ok: true, invite: publicInvite(inv, { includePassword: true }) });
+      }
+
+      // POST /invite/:code/pair-phone   { phoneModel }
+      if (method === 'POST' && rest === '/pair-phone') {
+        if (inv.status === 'consumed') return json({ error: 'already-consumed' }, 409);
+        if (inv.status === 'forfeited') return json({ error: 'forfeited' }, 410);
+        const body = await safeJson(request);
+        const phoneModel = String(body?.phoneModel || '').trim() || null;
+        // If already paired, return the same deviceToken (idempotent scan-again).
+        if (!inv.phoneDeviceToken) inv.phoneDeviceToken = newPhoneDeviceToken();
+        inv.phoneModel = phoneModel || inv.phoneModel;
+        inv.phoneScannedAt = inv.phoneScannedAt || Date.now();
+        if (inv.status === 'unused') inv.status = 'phone-paired';
+        await saveInvite(env, code, inv);
+        return json({
+          ok: true,
+          invite: publicInvite(inv, { includePassword: true, includeDeviceToken: true }),
+        });
+      }
+
+      // POST /invite/:code/rsvp-accept   header X-Phone-Token
+      if (method === 'POST' && rest === '/rsvp-accept') {
+        const token = request.headers.get('X-Phone-Token') || '';
+        if (!inv.phoneDeviceToken || token !== inv.phoneDeviceToken) {
+          return json({ error: 'phone-token-mismatch' }, 403);
+        }
+        if (inv.status === 'consumed') return json({ error: 'already-consumed' }, 409);
+        if (inv.status === 'forfeited') return json({ error: 'forfeited' }, 410);
+        inv.status = 'rsvp-hold';
+        inv.rsvpAcceptedAt = Date.now();
+        inv.rsvpExpiresAt = Date.now() + INVITE_RSVP_TTL_MS;
+        await saveInvite(env, code, inv);
+        return json({ ok: true, invite: publicInvite(inv, { includePassword: true }) });
+      }
+
+      // POST /invite/:code/forfeit   header X-Phone-Token
+      if (method === 'POST' && rest === '/forfeit') {
+        const token = request.headers.get('X-Phone-Token') || '';
+        if (!inv.phoneDeviceToken || token !== inv.phoneDeviceToken) {
+          return json({ error: 'phone-token-mismatch' }, 403);
+        }
+        if (inv.status === 'consumed') return json({ error: 'already-consumed' }, 409);
+        inv.status = 'forfeited';
+        inv.forfeitedAt = Date.now();
+        await saveInvite(env, code, inv);
+        return json({ ok: true, invite: publicInvite(inv) });
+      }
     }
 
     // ------- ACCOUNT ENDPOINTS -------

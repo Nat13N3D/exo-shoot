@@ -22,7 +22,7 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Range, If-Range, If-None-Match',
+  'Access-Control-Allow-Headers': 'Content-Type, Range, If-Range, If-None-Match, Authorization',
   'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, ETag',
   'Access-Control-Max-Age': '86400',
 };
@@ -34,6 +34,116 @@ const RENDER_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for buyer-scan viewer
 // clutter. Un-bound renders still use the full 30-day TTL.
 const PREVIEWED_RENDER_TTL_MS = 5 * 60 * 1000;
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 day sliding session
+const MAX_2257_FILE_SIZE = 20 * 1024 * 1024;     // 20 MB per ID/selfie
+const PBKDF2_ITERS = 200_000;
+
+// ---------------- ACCOUNT HELPERS ----------------
+
+function toB64(bytes) {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+}
+function fromB64(s) {
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function hashPassword(password, saltBytes) {
+  const salt = saltBytes || crypto.getRandomValues(new Uint8Array(16));
+  const enc = new TextEncoder().encode(password);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', enc, 'PBKDF2', false, ['deriveBits'],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    keyMaterial, 256,
+  );
+  return { hash: toB64(new Uint8Array(bits)), salt: toB64(salt) };
+}
+
+async function verifyPassword(password, hashB64, saltB64) {
+  const salt = fromB64(saltB64);
+  const { hash } = await hashPassword(password, salt);
+  return hash === hashB64;
+}
+
+function newAccountId() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return 'acc_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function newSessionToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function normalizeEmail(e) {
+  return String(e || '').trim().toLowerCase();
+}
+
+async function loadAccount(env, accountId) {
+  const obj = await env.MEDIA.get(`account/${accountId}/_manifest.json`);
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch { return null; }
+}
+async function saveAccount(env, accountId, manifest) {
+  await env.MEDIA.put(`account/${accountId}/_manifest.json`, JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+async function loadAccountIdByEmail(env, email) {
+  const obj = await env.MEDIA.get(`account/_email/${normalizeEmail(email)}.txt`);
+  if (!obj) return null;
+  return (await obj.text()).trim();
+}
+async function saveEmailIndex(env, email, accountId) {
+  await env.MEDIA.put(`account/_email/${normalizeEmail(email)}.txt`, accountId, {
+    httpMetadata: { contentType: 'text/plain' },
+  });
+}
+async function loadSession(env, token) {
+  const obj = await env.MEDIA.get(`account/_session/${token}.json`);
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch { return null; }
+}
+async function saveSession(env, token, session) {
+  await env.MEDIA.put(`account/_session/${token}.json`, JSON.stringify(session), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+async function deleteSession(env, token) {
+  try { await env.MEDIA.delete(`account/_session/${token}.json`); } catch {}
+}
+
+// Resolve Authorization: Bearer <token> → { accountId, manifest } or null
+async function resolveSession(env, request) {
+  const auth = request.headers.get('Authorization') || '';
+  const m = auth.match(/^Bearer\s+([a-f0-9]+)$/i);
+  if (!m) return null;
+  const token = m[1];
+  const session = await loadSession(env, token);
+  if (!session) return null;
+  if (Date.now() > session.expiresAt) {
+    await deleteSession(env, token);
+    return null;
+  }
+  const manifest = await loadAccount(env, session.accountId);
+  if (!manifest) return null;
+  // Slide session
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  await saveSession(env, token, session);
+  return { accountId: session.accountId, manifest, token };
+}
+
+async function safeJson(request) {
+  try { return await request.json(); } catch { return null; }
+}
 
 function newRenderToken() {
   const bytes = new Uint8Array(16);
@@ -351,6 +461,171 @@ export default {
       }
     }
 
+    // ------- ACCOUNT ENDPOINTS -------
+
+    // POST /account/create — { email, password, displayName, stageName }
+    if (method === 'POST' && pathname === '/account/create') {
+      const body = await safeJson(request);
+      if (!body) return json({ error: 'invalid-body' }, 400);
+      const email = normalizeEmail(body.email);
+      const password = String(body.password || '');
+      const displayName = String(body.displayName || '').trim();
+      const stageName = String(body.stageName || '').trim();
+      if (!email || !password || !displayName) {
+        return json({ error: 'missing-fields' }, 400);
+      }
+      if (password.length < 8) return json({ error: 'password-too-short' }, 400);
+      const existingId = await loadAccountIdByEmail(env, email);
+      if (existingId) return json({ error: 'email-taken' }, 409);
+      const accountId = newAccountId();
+      const { hash, salt } = await hashPassword(password);
+      const manifest = {
+        accountId,
+        email,
+        passwordHash: hash,
+        passwordSalt: salt,
+        displayName,
+        stageName,
+        createdAt: Date.now(),
+        verification2257: {
+          status: 'not_started', // not_started | pending | approved | rejected
+          submittedAt: null,
+          reviewedAt: null,
+          legalName: null,
+          dob: null,
+        },
+        magazineSubmissions: [],
+      };
+      await saveAccount(env, accountId, manifest);
+      await saveEmailIndex(env, email, accountId);
+      const token = newSessionToken();
+      await saveSession(env, token, {
+        accountId, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS,
+      });
+      return json({
+        ok: true,
+        accountId,
+        sessionToken: token,
+        account: publicAccount(manifest),
+      });
+    }
+
+    // POST /account/login — { email, password }
+    if (method === 'POST' && pathname === '/account/login') {
+      const body = await safeJson(request);
+      if (!body) return json({ error: 'invalid-body' }, 400);
+      const email = normalizeEmail(body.email);
+      const password = String(body.password || '');
+      if (!email || !password) return json({ error: 'missing-fields' }, 400);
+      const accountId = await loadAccountIdByEmail(env, email);
+      if (!accountId) return json({ error: 'invalid-credentials' }, 401);
+      const manifest = await loadAccount(env, accountId);
+      if (!manifest) return json({ error: 'invalid-credentials' }, 401);
+      const ok = await verifyPassword(password, manifest.passwordHash, manifest.passwordSalt);
+      if (!ok) return json({ error: 'invalid-credentials' }, 401);
+      const token = newSessionToken();
+      await saveSession(env, token, {
+        accountId, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS,
+      });
+      return json({
+        ok: true,
+        accountId,
+        sessionToken: token,
+        account: publicAccount(manifest),
+      });
+    }
+
+    // POST /account/logout — invalidate current session
+    if (method === 'POST' && pathname === '/account/logout') {
+      const sess = await resolveSession(env, request);
+      if (sess) await deleteSession(env, sess.token);
+      return json({ ok: true });
+    }
+
+    // GET /account/me — current session's account
+    if (method === 'GET' && pathname === '/account/me') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      return json({ ok: true, account: publicAccount(sess.manifest) });
+    }
+
+    // POST /account/2257/upload?type=id-front|id-back|selfie — raw body = image bytes
+    if (method === 'POST' && pathname === '/account/2257/upload') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      const type = url.searchParams.get('type') || '';
+      if (!['id-front', 'id-back', 'selfie'].includes(type)) {
+        return json({ error: 'bad-type', validTypes: ['id-front', 'id-back', 'selfie'] }, 400);
+      }
+      const contentType = request.headers.get('Content-Type') || 'image/jpeg';
+      const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
+      if (contentLength && contentLength > MAX_2257_FILE_SIZE) {
+        return json({ error: 'too-large', maxBytes: MAX_2257_FILE_SIZE }, 413);
+      }
+      const ext = contentType.includes('png') ? 'png' : 'jpg';
+      const key = `account/${sess.accountId}/2257/${type}.${ext}`;
+      await env.MEDIA.put(key, request.body, { httpMetadata: { contentType } });
+      return json({ ok: true, type, sizeBytes: contentLength || 0 });
+    }
+
+    // POST /account/2257/submit — { dob (YYYY-MM-DD), legalName }
+    if (method === 'POST' && pathname === '/account/2257/submit') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      const body = await safeJson(request);
+      if (!body) return json({ error: 'invalid-body' }, 400);
+      const dob = String(body.dob || '').trim();
+      const legalName = String(body.legalName || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) return json({ error: 'bad-dob' }, 400);
+      if (!legalName) return json({ error: 'missing-legal-name' }, 400);
+      // 18+ check
+      const dobDate = new Date(dob);
+      const ageMs = Date.now() - dobDate.getTime();
+      const ageYears = ageMs / (365.25 * 24 * 60 * 60 * 1000);
+      if (!isFinite(ageYears) || ageYears < 18) {
+        return json({ error: 'must-be-18-plus' }, 403);
+      }
+      // Verify all 3 files uploaded
+      const parts = ['id-front', 'id-back', 'selfie'];
+      for (const p of parts) {
+        const jpg = await env.MEDIA.head(`account/${sess.accountId}/2257/${p}.jpg`).catch(() => null);
+        const png = await env.MEDIA.head(`account/${sess.accountId}/2257/${p}.png`).catch(() => null);
+        if (!jpg && !png) return json({ error: 'missing-file', part: p }, 400);
+      }
+      const m = sess.manifest;
+      m.verification2257 = {
+        status: 'approved', // TESTING: auto-approve for MVP. Real flow → 'pending' + admin approves.
+        submittedAt: Date.now(),
+        reviewedAt: Date.now(),
+        legalName,
+        dob,
+      };
+      await saveAccount(env, sess.accountId, m);
+      return json({ ok: true, verification2257: m.verification2257 });
+    }
+
+    // GET /account/2257/status — current 2257 status
+    if (method === 'GET' && pathname === '/account/2257/status') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      return json({ ok: true, verification2257: sess.manifest.verification2257 });
+    }
+
+    // ------- end account endpoints -------
+
     return json({ error: 'route-not-found', method, path: pathname }, 404);
   },
 };
+
+// Never leak passwordHash/salt/sessions to clients.
+function publicAccount(m) {
+  return {
+    accountId: m.accountId,
+    email: m.email,
+    displayName: m.displayName,
+    stageName: m.stageName,
+    createdAt: m.createdAt,
+    verification2257: m.verification2257,
+    magazineSubmissions: m.magazineSubmissions || [],
+  };
+}

@@ -594,11 +594,14 @@ export default {
       }
       const m = sess.manifest;
       m.verification2257 = {
-        status: 'approved', // TESTING: auto-approve for MVP. Real flow → 'pending' + admin approves.
+        // Job 1: real pending state. Admin reviews via /admin dashboard
+        // and either approves or requests resubmission with a reason.
+        status: 'pending',
         submittedAt: Date.now(),
-        reviewedAt: Date.now(),
+        reviewedAt: null,
         legalName,
         dob,
+        resubmissionReason: null,
       };
       await saveAccount(env, sess.accountId, m);
       return json({ ok: true, verification2257: m.verification2257 });

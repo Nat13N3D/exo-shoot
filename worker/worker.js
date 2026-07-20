@@ -606,13 +606,16 @@ export default {
               <div style="background: #161020; border: 1px solid #4a3560; border-radius: 4px; padding: 14px 18px; margin: 14px 0; line-height: 1.7;">${reasonEsc}</div>
               <p><a href="${editorLink}" style="display: inline-block; background: #d4af37; color: #0a0a0a; padding: 10px 22px; text-decoration: none; border-radius: 3px; font-weight: 700; letter-spacing: 0.18em; margin-top: 8px;">RESUBMIT ON ENCOREXO</a></p>
             </div>`;
-          sendEmail(env, {
+          const rsEmail = await sendEmail(env, {
             to: acct.email,
             subject: 'Please resubmit your ENCORE XO documentation',
             html,
-          }).catch(() => {});
+          });
+          if (!rsEmail.ok) {
+            console.warn('[admin resubmit] artist notify failed (expected on free tier if artist email != Resend account email):', rsEmail);
+          }
 
-          return json({ ok: true, account: publicAccount(acct) });
+          return json({ ok: true, account: publicAccount(acct), emailSent: rsEmail.ok });
         }
 
         // DELETE /admin/account/:id — hard delete (manifest + email index + sessions + 2257 files)
@@ -808,12 +811,17 @@ export default {
           </ul>
           <p><a href="${adminLink}" style="display: inline-block; background: #d4af37; color: #0a0a0a; padding: 10px 22px; text-decoration: none; border-radius: 3px; font-weight: 700; letter-spacing: 0.18em; margin-top: 8px;">OPEN ADMIN DASHBOARD</a></p>
         </div>`;
-      // Fire-and-forget — never blocks the submit.
-      sendEmail(env, {
+      // AWAIT so the fetch is not terminated when the Worker returns.
+      // Cloudflare Workers kill orphan promises when the response goes out.
+      // Adds ~200-500ms to submit; user is already at a busy spinner.
+      const emailResult = await sendEmail(env, {
         to: adminTo,
         subject: `New EXO artist pending review — ${m.displayName}`,
         html,
-      }).catch(() => {});
+      });
+      if (!emailResult.ok) {
+        console.warn('[2257 submit] admin notify failed:', emailResult);
+      }
 
       return json({ ok: true, verification2257: m.verification2257 });
     }

@@ -263,10 +263,9 @@ export default function JoinInvite({ code }) {
     return <FullPanel>
       <Brand />
       <div style={{ ...heading, marginTop: 18 }}>OPEN editor.encorexo.com ON YOUR LAPTOP</div>
-      <CodeBox label="INVITE CODE" value={invite.code} />
       <CodeBox label="PASSWORD" value={invite.password} />
       <Muted style={{ marginTop: 14, fontSize: 10, textAlign: 'center', maxWidth: 320 }}>
-        Type both on your laptop to complete signup. This screen stays open.
+        Type your password on your laptop to complete signup. This screen stays open.
       </Muted>
     </FullPanel>;
   }

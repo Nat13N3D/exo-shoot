@@ -149,11 +149,15 @@ async function safeJson(request) {
 // Invite code: 12 alphanumeric chars, uppercase, dashed 4-4-4 (A3F9-K2LP-8QM6).
 // Alphabet excludes 0/O and 1/I/L to avoid handwritten/QR-scan ambiguity.
 const INVITE_CODE_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-// Password: 10 mixed-case alphanumeric chars — typeable in one shot on
-// desktop after reading off phone screen. She can rotate later.
-const INVITE_PASSWORD_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+// Password: short + branded, generated per one of two stem templates.
+// Alphabet excludes 0/O/o/1/I/l for scan-clarity / handwritten legibility.
+const INVITE_PASSWORD_ALPHA = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// Each stem: literal chars + 'X' placeholders that get random-filled.
+const INVITE_PASSWORD_STEMS = [
+  'U-b_a.QT-XXXXX-XX',   // "you-be-a-cutie" — 7 random chars
+  'P/y.T-1XO-Mdl.XXXX',  // "pretty-1XO-model" — 4 random chars
+];
 const INVITE_CODE_LEN = 12;
-const INVITE_PASSWORD_LEN = 10;
 const INVITE_RSVP_TTL_MS = 24 * 60 * 60 * 1000; // 24-hour hold after ACCEPT
 
 function pickFromAlphabet(alpha, len) {
@@ -166,7 +170,31 @@ function generateInviteCode() {
   return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
 }
 function generateInvitePassword() {
-  return pickFromAlphabet(INVITE_PASSWORD_ALPHA, INVITE_PASSWORD_LEN);
+  // Randomly pick a stem template, fill X placeholders with alphanumeric chars.
+  const pick = new Uint8Array(1);
+  crypto.getRandomValues(pick);
+  const stem = INVITE_PASSWORD_STEMS[pick[0] % INVITE_PASSWORD_STEMS.length];
+  const xCount = (stem.match(/X/g) || []).length;
+  const chars = pickFromAlphabet(INVITE_PASSWORD_ALPHA, xCount);
+  let out = '';
+  let ci = 0;
+  for (const c of stem) out += (c === 'X') ? chars[ci++] : c;
+  return out;
+}
+// Reverse lookup: password → invite code. R2 key allows most chars but
+// slashes create pseudo-folders; encodeURIComponent handles it.
+async function savePasswordIndex(env, password, code) {
+  await env.MEDIA.put(`invite/_pwindex/${encodeURIComponent(password)}.txt`, code, {
+    httpMetadata: { contentType: 'text/plain' },
+  });
+}
+async function loadInviteCodeByPassword(env, password) {
+  const obj = await env.MEDIA.get(`invite/_pwindex/${encodeURIComponent(password)}.txt`);
+  if (!obj) return null;
+  return (await obj.text()).trim();
+}
+async function deletePasswordIndex(env, password) {
+  try { await env.MEDIA.delete(`invite/_pwindex/${encodeURIComponent(password)}.txt`); } catch {}
 }
 function newPhoneDeviceToken() {
   const bytes = new Uint8Array(20);
@@ -779,6 +807,7 @@ export default {
             forfeitedAt: null,
           };
           await saveInvite(env, code, manifest);
+          await savePasswordIndex(env, password, code);
           invites.push(adminInvite(manifest));
         }
         return json({ ok: true, count: invites.length, invites });
@@ -803,6 +832,9 @@ export default {
       if (method === 'DELETE' && invMatch) {
         const code = normalizeInviteCode(invMatch[1]);
         if (!code) return json({ error: 'bad-code' }, 400);
+        // Clean up password index too so future signups can't find a ghost invite.
+        const inv = await loadInvite(env, code);
+        if (inv?.password) await deletePasswordIndex(env, inv.password);
         try { await env.MEDIA.delete(`invite/${code}/_manifest.json`); } catch {}
         return json({ ok: true, deleted: code });
       }
@@ -885,22 +917,21 @@ export default {
 
     // ------- ACCOUNT ENDPOINTS -------
 
-    // POST /account/create — invite-gated (Job 8)
-    // Body: { inviteCode, password, email, displayName, stageName }
-    //   inviteCode + password come from the artist's phone (scanned QR + wizard)
-    //   Invite must be phone-paired or rsvp-hold (not consumed / not forfeited)
-    //   On success: consume invite, link phoneDeviceToken to new account
+    // POST /account/create — invite-gated (Job 8 → strip-down)
+    // Body: { password, email, stageName }
+    //   Password IS the credential — server looks up invite via password index.
+    //   stageName populates both stageName + displayName on the account.
     if (method === 'POST' && pathname === '/account/create') {
       const body = await safeJson(request);
       if (!body) return json({ error: 'invalid-body' }, 400);
-      const inviteCode = normalizeInviteCode(body.inviteCode);
-      const password = String(body.password || '');
+      const password = String(body.password || '').trim();
       const email = normalizeEmail(body.email);
-      const displayName = String(body.displayName || '').trim();
       const stageName = String(body.stageName || '').trim();
-      if (!inviteCode) return json({ error: 'invite-required' }, 400);
-      if (!email || !password || !displayName) return json({ error: 'missing-fields' }, 400);
+      if (!password) return json({ error: 'password-required' }, 400);
+      if (!email || !stageName) return json({ error: 'missing-fields' }, 400);
 
+      const inviteCode = await loadInviteCodeByPassword(env, password);
+      if (!inviteCode) return json({ error: 'invite-not-found' }, 404);
       const inv = await loadInvite(env, inviteCode);
       if (!inv) return json({ error: 'invite-not-found' }, 404);
       if (inv.status === 'consumed') return json({ error: 'invite-consumed' }, 409);
@@ -909,6 +940,8 @@ export default {
       if (inv.status !== 'phone-paired' && inv.status !== 'rsvp-hold') {
         return json({ error: 'invite-not-paired', hint: 'scan the QR on your phone first' }, 400);
       }
+      // Defense in depth: password index lookup is definitive, but re-verify
+      // the invite manifest's stored password too.
       if (!inv.password || password !== inv.password) {
         return json({ error: 'password-mismatch' }, 401);
       }
@@ -923,7 +956,7 @@ export default {
         email,
         passwordHash: hash,
         passwordSalt: salt,
-        displayName,
+        displayName: stageName, // mirrored — one name field on the client
         stageName,
         createdAt: Date.now(),
         // Phone auto-paired at signup — no separate SYNC PHONE flow needed
@@ -945,12 +978,16 @@ export default {
       await saveEmailIndex(env, email, accountId);
 
       // Consume the invite atomically after account save. Clear the
-      // password field for hygiene — it's now the account's password.
+      // password field + delete the password index for hygiene — the
+      // password now lives (hashed) on the account, and no future signup
+      // should be able to find this invite.
+      const consumedPassword = inv.password;
       inv.status = 'consumed';
       inv.consumedBy = accountId;
       inv.consumedAt = Date.now();
       inv.password = null;
       await saveInvite(env, inviteCode, inv);
+      if (consumedPassword) await deletePasswordIndex(env, consumedPassword);
 
       const token = newSessionToken();
       await saveSession(env, token, {

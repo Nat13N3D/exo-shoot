@@ -216,12 +216,25 @@ export default function JoinInvite({ code }) {
           );
         })}
       </div>
-      <label style={{ ...radioRow, marginTop: 14, borderTop: `1px solid ${BORDER}`, paddingTop: 14, width: '100%', maxWidth: 320 }}>
+      <label
+        style={{
+          ...radioRow,
+          marginTop: 14,
+          borderTop: `1px solid ${BORDER}`,
+          paddingTop: 14,
+          width: '100%', maxWidth: 320,
+          background: laptopOk ? 'rgba(212,175,55,0.16)' : INPUT_BG,
+          borderLeft: `3px solid ${laptopOk ? GOLD : 'transparent'}`,
+          color: laptopOk ? '#ffffff' : TEXT,
+          fontWeight: laptopOk ? 700 : 400,
+          transition: 'background 120ms, border-color 120ms',
+        }}
+      >
         <input
           type="checkbox"
           checked={laptopOk}
           onChange={(e) => setLaptopOk(e.target.checked)}
-          style={{ marginRight: 10 }}
+          style={{ marginRight: 10, accentColor: GOLD }}
         />
         I HAVE A 2020 OR NEWER LAPTOP
       </label>

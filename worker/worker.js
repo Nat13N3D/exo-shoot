@@ -1003,6 +1003,25 @@ export default {
       return json({ ok: true, account: publicAccount(sess.manifest) });
     }
 
+    // POST /account/privacy-ack — timestamp + IP consent record
+    // Fired once per account, before the 2257 wizard is interactive.
+    // Idempotent — repeat calls return the original ackedAt.
+    if (method === 'POST' && pathname === '/account/privacy-ack') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      if (sess.manifest.privacyAckedAt) {
+        return json({
+          ok: true,
+          alreadyAcked: true,
+          privacyAckedAt: sess.manifest.privacyAckedAt,
+        });
+      }
+      sess.manifest.privacyAckedAt = Date.now();
+      sess.manifest.privacyAckedIp = request.headers.get('CF-Connecting-IP') || null;
+      await saveAccount(env, sess.accountId, sess.manifest);
+      return json({ ok: true, privacyAckedAt: sess.manifest.privacyAckedAt });
+    }
+
     // POST /account/2257/upload?type=id-front|id-back|selfie — raw body = image bytes
     if (method === 'POST' && pathname === '/account/2257/upload') {
       const sess = await resolveSession(env, request);
@@ -1119,6 +1138,7 @@ function publicAccount(m) {
     createdAt: m.createdAt,
     pairedPhoneModel: m.pairedPhoneModel || null,
     invitedByCode: m.invitedByCode || null,
+    privacyAckedAt: m.privacyAckedAt || null,
     verification2257: m.verification2257,
     magazineSubmissions: m.magazineSubmissions || [],
   };

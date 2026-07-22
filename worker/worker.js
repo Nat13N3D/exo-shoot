@@ -184,13 +184,20 @@ function generateInvitePassword() {
 // Reverse lookup: password → invite code. R2 key allows most chars but
 // slashes create pseudo-folders; encodeURIComponent handles it.
 async function savePasswordIndex(env, password, code) {
-  await env.MEDIA.put(`invite/_pwindex/${encodeURIComponent(password)}.txt`, code, {
+  const key = `invite/_pwindex/${encodeURIComponent(password)}.txt`;
+  await env.MEDIA.put(key, code, {
     httpMetadata: { contentType: 'text/plain' },
   });
+  console.log('[invite pw save] key:', key, '-> code:', code);
 }
 async function loadInviteCodeByPassword(env, password) {
-  const obj = await env.MEDIA.get(`invite/_pwindex/${encodeURIComponent(password)}.txt`);
-  if (!obj) return null;
+  const key = `invite/_pwindex/${encodeURIComponent(password)}.txt`;
+  const obj = await env.MEDIA.get(key);
+  if (!obj) {
+    console.warn('[invite pw lookup] MISS — key:', key, '(password length:', password?.length, ')');
+    return null;
+  }
+  console.log('[invite pw lookup] HIT — key:', key);
   return (await obj.text()).trim();
 }
 async function deletePasswordIndex(env, password) {

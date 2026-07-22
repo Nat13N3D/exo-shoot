@@ -236,6 +236,73 @@ function publicInvite(m, opts = {}) {
 // Admin-view — full manifest minus nothing.
 function adminInvite(m) { return { ...m }; }
 
+// ---------------- MESSAGES ----------------
+function newMessageId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return 'msg_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+function newThreadId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return 'thr_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function listMessagesForAccount(env, accountId) {
+  const list = await env.MEDIA.list({ prefix: `account/${accountId}/messages/` });
+  const messages = [];
+  for (const obj of list.objects) {
+    if (!obj.key.endsWith('.json')) continue;
+    const r = await env.MEDIA.get(obj.key);
+    if (!r) continue;
+    try { messages.push(JSON.parse(await r.text())); } catch {}
+  }
+  messages.sort((a, b) => (a.sentAt || 0) - (b.sentAt || 0));
+  return messages;
+}
+async function saveMessage(env, accountId, msg) {
+  await env.MEDIA.put(`account/${accountId}/messages/${msg.messageId}.json`, JSON.stringify(msg), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+async function loadMessage(env, accountId, messageId) {
+  const obj = await env.MEDIA.get(`account/${accountId}/messages/${messageId}.json`);
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch { return null; }
+}
+
+// ---------------- PRIVACY POLICY EMAIL ----------------
+// Pre-built for future Resend paid-tier activation. Gated by
+// artistEmailsEnabled(env).
+function buildPrivacyPolicyEmail(m) {
+  const name = escapeHtml(m.displayName || m.stageName || 'artist');
+  return `
+<div style="font-family: system-ui, -apple-system, sans-serif; max-width: 620px; margin: 0 auto; padding: 24px; background: #0a0a0a; color: #e0d0ff;">
+  <div style="font-size: 22px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; margin-bottom: 20px; text-align: center;">ENCORE XO&trade;</div>
+  <div style="font-size: 13px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-bottom: 12px;">YOUR PRIVACY POLICY</div>
+  <p style="line-height: 1.7;">Hi ${name}, here is a copy of the privacy notice you acknowledged. Keep this for your records.</p>
+
+  <div style="font-size: 11px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-top: 18px;">WHO WE ARE</div>
+  <p style="line-height: 1.7; font-size: 13px;">ENCORE XO&trade; is a service operated by <strong>707G HOLDINGS LLC</strong>, a Georgia limited liability company based in Atlanta, GA.</p>
+  <div style="background: #161020; border: 1px solid #4a3560; border-radius: 4px; padding: 10px 14px; margin: 10px 0; font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #d4af37; line-height: 1.9;">
+    707G HOLDINGS LLC<br />1445 Woodmont Lane, Suite 853<br />Atlanta, GA 30318<br />&#9742; 470-491-5972<br />&#9993; admin@seventy7g.com
+  </div>
+
+  <div style="font-size: 11px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-top: 18px;">WHY WE'RE ASKING</div>
+  <p style="line-height: 1.7; font-size: 13px;">Federal law (18 U.S.C. &sect;2257) requires that we verify the age and identity of every performer before their content is published. This is a one-time compliance step.</p>
+
+  <div style="font-size: 11px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-top: 18px;">HOW WE PROTECT YOU</div>
+  <p style="line-height: 1.7; font-size: 13px;">Your documents are stored encrypted, accessible only to our custodian of records and to you. They are never shared publicly, never sold, never used for marketing.</p>
+
+  <div style="font-size: 11px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-top: 18px;">CUSTODIAN OF RECORDS</div>
+  <p style="line-height: 1.7; font-size: 13px;">Records required by <strong>18 U.S.C. &sect;&sect; 2257 and 2257A</strong> and the implementing regulations at <strong>28 C.F.R. Part 75</strong> are maintained by 707G HOLDINGS LLC at the address above. 707G HOLDINGS LLC serves as the <strong>OFFICIAL CUSTODIAN OF RECORDS</strong> for ENCORE XO&trade;.</p>
+
+  <div style="font-size: 11px; letter-spacing: 0.22em; color: #d4af37; font-weight: 700; margin-top: 18px;">YOUR RIGHTS</div>
+  <p style="line-height: 1.7; font-size: 13px;">You may request a copy of your record or request its deletion (subject to the federal retention period) by emailing <strong>admin@seventy7g.com</strong> from your registered address.</p>
+
+  <p style="line-height: 1.7; font-size: 11px; color: #8a7a9e; margin-top: 24px; text-align: center;">This is a one-time step. We will never ask you for these documents again unless you request a replacement.</p>
+</div>`;
+}
+
 // ---------------- ADMIN PASSWORD (mutable, self-service) ----------------
 // Priority:
 //   1. R2 admin/_password.json (hashed) — set via /admin/change-password
@@ -266,6 +333,16 @@ async function checkAdminPassword(env, provided) {
 // Reply-To is set to env.ADMIN_EMAIL so operator replies land in that inbox.
 // Failures are logged but do NOT throw — email is best-effort, never blocks
 // account/render flows.
+//
+// ARTIST EMAILS ON/OFF SWITCH — Captain's flag. Free-tier Resend blocks
+// all recipients except admin@seventy7g.com. When Captain upgrades Resend
+// to a verified domain, set env.EMAILS_TO_ARTISTS_ENABLED = "1" (via
+// wrangler secret put) — the email code paths that go to arbitrary artist
+// addresses will start firing. Admin-bound emails (new-artist-pending,
+// resubmission-required) always fire regardless.
+function artistEmailsEnabled(env) {
+  return (env.EMAILS_TO_ARTISTS_ENABLED || '').trim() === '1';
+}
 async function sendEmail(env, { to, subject, html, text, replyTo }) {
   const key = env.RESEND_API_KEY;
   if (!key) {
@@ -751,6 +828,51 @@ export default {
           return json({ ok: true, account: publicAccount(acct), emailSent: rsEmail.ok });
         }
 
+        // GET /admin/account/:id/messages — list all messages
+        if (method === 'GET' && rest === '/messages') {
+          const messages = await listMessagesForAccount(env, accountId);
+          return json({ ok: true, messages });
+        }
+
+        // POST /admin/account/:id/message — send a message from admin
+        //   Body: { subject, body, threadId? }
+        //   New thread if no threadId. Notification email to artist gated by
+        //   artist-emails flag (silent when free-tier).
+        if (method === 'POST' && rest === '/message') {
+          const body = await safeJson(request);
+          const subject = String(body?.subject || '').trim() || null;
+          const text = String(body?.body || '').trim();
+          if (!text) return json({ error: 'body-required' }, 400);
+          const threadId = String(body?.threadId || '').trim() || newThreadId();
+          const msg = {
+            messageId: newMessageId(),
+            threadId,
+            from: 'admin',
+            subject,
+            body: text,
+            sentAt: Date.now(),
+            readAt: null,
+          };
+          await saveMessage(env, accountId, msg);
+          // Pre-built artist email — gated. Flip on with EMAILS_TO_ARTISTS_ENABLED=1
+          // when Resend is upgraded.
+          if (artistEmailsEnabled(env)) {
+            const html = `<div style="font-family: system-ui, sans-serif; padding: 24px; background: #0a0a0a; color: #e0d0ff; max-width: 520px; margin: 0 auto;">
+              <div style="font-size: 18px; font-weight: 900; letter-spacing: 0.28em; color: #d4af37; text-align: center;">ENCORE XO&trade;</div>
+              <div style="font-size: 12px; letter-spacing: 0.2em; color: #d4af37; font-weight: 700; margin-top: 18px;">NEW MESSAGE FROM ENCORE XO</div>
+              ${subject ? `<div style="font-size: 15px; font-weight: 700; margin-top: 10px;">${escapeHtml(subject)}</div>` : ''}
+              <div style="background: #161020; border: 1px solid #4a3560; border-radius: 4px; padding: 14px; margin: 14px 0; line-height: 1.7; font-size: 13px;">${escapeHtml(text)}</div>
+              <p><a href="https://editor.encorexo.com" style="display: inline-block; background: #d4af37; color: #0a0a0a; padding: 10px 22px; text-decoration: none; border-radius: 3px; font-weight: 700; letter-spacing: 0.18em; margin-top: 8px;">OPEN ON ENCOREXO</a></p>
+            </div>`;
+            sendEmail(env, {
+              to: acct.email,
+              subject: subject ? `ENCORE XO: ${subject}` : 'You have a new message from ENCORE XO',
+              html,
+            }).catch(() => {});
+          }
+          return json({ ok: true, message: msg });
+        }
+
         // DELETE /admin/account/:id — hard delete (manifest + email index + sessions + 2257 files)
         if (method === 'DELETE' && rest === '') {
           const email = acct.email;
@@ -1036,6 +1158,62 @@ export default {
       return json({ ok: true, account: publicAccount(sess.manifest) });
     }
 
+    // GET /account/me/messages — list all messages for this artist
+    if (method === 'GET' && pathname === '/account/me/messages') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      const messages = await listMessagesForAccount(env, sess.accountId);
+      return json({ ok: true, messages });
+    }
+
+    // POST /account/me/messages — artist replies to a thread
+    if (method === 'POST' && pathname === '/account/me/messages') {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      const body = await safeJson(request);
+      const text = String(body?.body || '').trim();
+      const threadId = String(body?.threadId || '').trim();
+      if (!text) return json({ error: 'body-required' }, 400);
+      if (!threadId) return json({ error: 'thread-required' }, 400);
+      const msg = {
+        messageId: newMessageId(),
+        threadId,
+        from: 'artist',
+        subject: null,
+        body: text,
+        sentAt: Date.now(),
+        readAt: null,
+      };
+      await saveMessage(env, sess.accountId, msg);
+      // Notify admin — always works (admin@seventy7g.com is Resend account email).
+      const html = `<div style="font-family: system-ui, sans-serif; padding: 20px; background: #0a0a0a; color: #e0d0ff;">
+        <div style="font-size: 14px; font-weight: 900; letter-spacing: 0.24em; color: #d4af37;">ENCORE XO&trade; — ARTIST REPLIED</div>
+        <p><strong>${escapeHtml(sess.manifest.displayName)}</strong> (${escapeHtml(sess.manifest.email)}) replied:</p>
+        <div style="background: #161020; border: 1px solid #4a3560; border-radius: 4px; padding: 12px; margin: 10px 0; line-height: 1.6;">${escapeHtml(text)}</div>
+        <p><a href="https://editor.encorexo.com/admin" style="color: #d4af37;">Open admin dashboard</a></p>
+      </div>`;
+      sendEmail(env, {
+        to: env.ADMIN_EMAIL || 'admin@seventy7g.com',
+        subject: `ENCORE XO — ${sess.manifest.displayName} replied`,
+        html,
+      }).catch(() => {});
+      return json({ ok: true, message: msg });
+    }
+
+    // POST /account/me/messages/:id/read — mark a message read
+    const msgReadMatch = pathname.match(/^\/account\/me\/messages\/(msg_[a-f0-9]{16})\/read$/);
+    if (method === 'POST' && msgReadMatch) {
+      const sess = await resolveSession(env, request);
+      if (!sess) return json({ error: 'not-authenticated' }, 401);
+      const messageId = msgReadMatch[1];
+      const msg = await loadMessage(env, sess.accountId, messageId);
+      if (!msg) return json({ error: 'not-found' }, 404);
+      if (msg.readAt) return json({ ok: true, alreadyRead: true });
+      msg.readAt = Date.now();
+      await saveMessage(env, sess.accountId, msg);
+      return json({ ok: true, message: msg });
+    }
+
     // POST /account/privacy-ack — timestamp + IP consent record
     // Fired once per account, before the 2257 wizard is interactive.
     // Idempotent — repeat calls return the original ackedAt.
@@ -1052,6 +1230,18 @@ export default {
       sess.manifest.privacyAckedAt = Date.now();
       sess.manifest.privacyAckedIp = request.headers.get('CF-Connecting-IP') || null;
       await saveAccount(env, sess.accountId, sess.manifest);
+
+      // Best-effort courtesy email of the policy to the artist. Gated by the
+      // artist-emails flag — flip on when Resend paid tier is active.
+      if (artistEmailsEnabled(env)) {
+        const html = buildPrivacyPolicyEmail(sess.manifest);
+        sendEmail(env, {
+          to: sess.manifest.email,
+          subject: 'Your ENCORE XO privacy policy',
+          html,
+        }).catch(() => {});
+      }
+
       return json({ ok: true, privacyAckedAt: sess.manifest.privacyAckedAt });
     }
 

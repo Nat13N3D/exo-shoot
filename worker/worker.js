@@ -149,14 +149,12 @@ async function safeJson(request) {
 // Invite code: 12 alphanumeric chars, uppercase, dashed 4-4-4 (A3F9-K2LP-8QM6).
 // Alphabet excludes 0/O and 1/I/L to avoid handwritten/QR-scan ambiguity.
 const INVITE_CODE_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-// Password: short + branded, generated per one of two stem templates.
-// Alphabet excludes 0/O/o/1/I/l for scan-clarity / handwritten legibility.
+// Password: 6-char pure alphanumeric, no separators, no ambiguous chars
+// (0/O/o/1/I/l excluded). Simplest possible for the artist to read off
+// her phone + type on her laptop. 54^6 = ~24 billion possibilities;
+// paired with edge rate limits, brute force is impractical.
 const INVITE_PASSWORD_ALPHA = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-// Each stem: literal chars + 'X' placeholders that get random-filled.
-const INVITE_PASSWORD_STEMS = [
-  'U-b_a.QT-XXXXX-XX',   // "you-be-a-cutie" — 7 random chars
-  'P/y.T-1XO-Mdl.XXXX',  // "pretty-1XO-model" — 4 random chars
-];
+const INVITE_PASSWORD_LEN = 6;
 const INVITE_CODE_LEN = 12;
 const INVITE_RSVP_TTL_MS = 24 * 60 * 60 * 1000; // 24-hour hold after ACCEPT
 
@@ -170,16 +168,7 @@ function generateInviteCode() {
   return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
 }
 function generateInvitePassword() {
-  // Randomly pick a stem template, fill X placeholders with alphanumeric chars.
-  const pick = new Uint8Array(1);
-  crypto.getRandomValues(pick);
-  const stem = INVITE_PASSWORD_STEMS[pick[0] % INVITE_PASSWORD_STEMS.length];
-  const xCount = (stem.match(/X/g) || []).length;
-  const chars = pickFromAlphabet(INVITE_PASSWORD_ALPHA, xCount);
-  let out = '';
-  let ci = 0;
-  for (const c of stem) out += (c === 'X') ? chars[ci++] : c;
-  return out;
+  return pickFromAlphabet(INVITE_PASSWORD_ALPHA, INVITE_PASSWORD_LEN);
 }
 // Reverse lookup: password → invite code. R2 key allows most chars but
 // slashes create pseudo-folders; encodeURIComponent handles it.
